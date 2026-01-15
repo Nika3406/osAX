@@ -1,1 +1,9 @@
-build
+# Build artifacts
+build/
+*.o
+*.bin
+*.elf
+*.img
+
+# Editor backups
+*~
