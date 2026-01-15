@@ -1,0 +1,41 @@
+// src/include/terminal.h
+#ifndef TERMINAL_H
+#define TERMINAL_H
+
+#include "../core/types.h"
+
+// VGA colors
+enum vga_color {
+    VGA_COLOR_BLACK = 0,
+    VGA_COLOR_BLUE = 1,
+    VGA_COLOR_GREEN = 2,
+    VGA_COLOR_CYAN = 3,
+    VGA_COLOR_RED = 4,
+    VGA_COLOR_MAGENTA = 5,
+    VGA_COLOR_BROWN = 6,
+    VGA_COLOR_LIGHT_GREY = 7,
+    VGA_COLOR_DARK_GREY = 8,
+    VGA_COLOR_LIGHT_BLUE = 9,
+    VGA_COLOR_LIGHT_GREEN = 10,
+    VGA_COLOR_LIGHT_CYAN = 11,
+    VGA_COLOR_LIGHT_RED = 12,
+    VGA_COLOR_LIGHT_MAGENTA = 13,
+    VGA_COLOR_YELLOW = 14,
+    VGA_COLOR_WHITE = 15,
+};
+
+// Terminal functions
+void terminal_init(void);
+void terminal_clear(void);
+void terminal_setcolor(enum vga_color fg, enum vga_color bg);
+void terminal_putchar(char c);
+void terminal_write(const char* str);
+void terminal_writeln(const char* str);
+void terminal_printf(const char* format, ...);
+void terminal_update_cursor(void);
+void terminal_get_cursor(int* x, int* y);
+void terminal_set_cursor(int x, int y);
+int terminal_readline(char* buffer, int max_len);
+void terminal_clear_input(void);
+
+#endif // TERMINAL_H
