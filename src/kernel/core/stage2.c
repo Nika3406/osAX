@@ -23,11 +23,11 @@ void c_main(void) {
     kprintf("  IDT initialized\n");
     
     // Memory detection
-    uint32_t detected_memory = detect_memory();
-    kprintf("  Memory: %d MB\n", detected_memory / 1024 / 1024);
+    uint32_t mem_mb = detect_memory();
+    kprintf("  Memory: %d MB\n", mem_mb);
     
     // Physical memory manager (now reserves DMA region)
-    physical_mm_init(detected_memory);
+    physical_mm_init(mem_mb);
     kprintf("  Physical memory manager ready\n");
     
     // Heap (physical mode)

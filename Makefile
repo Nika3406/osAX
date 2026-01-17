@@ -30,7 +30,7 @@ CORE_SOURCES = \
     src/kernel/core/main.c \
     src/kernel/core/idt.c \
     src/kernel/core/process.c \
-	src/kernel/core/executable.c
+    src/kernel/core/executable.c
 
 MEMORY_SOURCES = \
     src/kernel/memory/physical_mm.c \
@@ -221,12 +221,20 @@ $(DISK_IMG): $(BOOTLOADER_BIN) $(STAGE2_BIN)
 
 # --- Run in QEMU ---
 run: $(DISK_IMG)
-	@echo "Starting QEMU..."
-	$(QEMU) -hda $(DISK_IMG) -serial stdio
+	$(QEMU) -m 256 \
+	        -drive file=$(DISK_IMG),format=raw,if=ide \
+	        -serial stdio \
+	        -no-reboot -no-shutdown \
+	        -d int,cpu_reset,guest_errors -D qemu.log
+
 
 debug: $(DISK_IMG)
-	@echo "Starting QEMU in debug mode..."
-	$(QEMU) -hda $(DISK_IMG) -serial stdio -d int -no-reboot -no-shutdown
+	$(QEMU) -m 256 \
+	        -drive file=$(DISK_IMG),format=raw,if=ide \
+	        -serial stdio \
+	        -no-reboot -no-shutdown \
+	        -d int,cpu_reset,guest_errors -D qemu.log
+
 
 serial: $(DISK_IMG)
 	$(QEMU) -hda $(DISK_IMG) -serial stdio
