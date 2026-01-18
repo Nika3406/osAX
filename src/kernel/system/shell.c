@@ -47,6 +47,9 @@ static void cmd_mark(int argc, char** argv);
 static void cmd_file(int argc, char** argv);
 static void cmd_sysinfo(int argc, char** argv);
 static void cmd_views(int argc, char** argv);
+static void cmd_font(int argc, char** argv);
+static void cmd_gfx(int argc, char** argv);
+
 
 // Command structure
 typedef struct {
@@ -76,6 +79,8 @@ static command_t commands[] = {
     {"file", "Detect file type", cmd_file},
     {"sysinfo", "Display system information", cmd_sysinfo},
     {"views", "List all views with object counts", cmd_views},
+    {"font", "Set framebuffer font scale (1-4)", cmd_font},
+    {"gfx", "Show graphics info", cmd_gfx},
     {NULL, NULL, NULL}
 };
 
@@ -884,6 +889,57 @@ static void cmd_views(int argc, char** argv) {
     terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 }
 
+static int to_int(const char* s) {
+    if (!s || !*s) return 0;
+    int sign = 1;
+    if (*s == '-') { sign = -1; s++; }
+    int v = 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (*s - '0');
+        s++;
+    }
+    return v * sign;
+}
+
+static void cmd_font(int argc, char** argv) {
+    if (!terminal_is_graphics()) {
+        terminal_writeln("font: not in framebuffer graphics mode (still VGA text mode)");
+        return;
+    }
+
+    if (argc < 2) {
+        terminal_printf("font: current scale = %d\n", terminal_get_font_scale());
+        terminal_writeln("usage: font <1-4>");
+        return;
+    }
+
+    int scale = to_int(argv[1]);
+    if (scale < 1 || scale > 4) {
+        terminal_writeln("font: scale must be 1..4");
+        return;
+    }
+
+    if (terminal_set_font_scale(scale) == 0) {
+        terminal_printf("font: scale set to %d\n", scale);
+    } else {
+        terminal_writeln("font: failed (need framebuffer mode + valid fb)");
+    }
+}
+
+static void cmd_gfx(int argc, char** argv) {
+    (void)argc; (void)argv;
+
+    int w=0,h=0,pitch=0,bpp=0,cols=0,rows=0;
+    terminal_get_gfx_info(&w,&h,&pitch,&bpp,&cols,&rows);
+
+    terminal_printf("gfx: mode=%s\n", terminal_is_graphics() ? "framebuffer" : "vga-text");
+    if (terminal_is_graphics()) {
+        terminal_printf("gfx: %dx%d pitch=%d bpp=%d scale=%d grid=%dx%d\n",
+            w, h, pitch, bpp, terminal_get_font_scale(), cols, rows);
+    }
+}
+
+
 static void cmd_sysinfo(int argc, char** argv) {
     (void)argc; (void)argv;
     
@@ -891,8 +947,8 @@ static void cmd_sysinfo(int argc, char** argv) {
     terminal_writeln("=== OSAX System Information ===");
     terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     
-    terminal_writeln("Architecture: Metadata-First Operating System");
-    terminal_writeln("Storage Layer: exFAT (dumb file storage)");
+    terminal_writeln("Architecture: x86_64");
+    terminal_writeln("Storage Layer: exFAT (file storage)");
     terminal_writeln("Metadata Layer: MetaFS (object nervous system)");
     terminal_writeln("");
     
@@ -914,8 +970,5 @@ static void cmd_sysinfo(int argc, char** argv) {
     terminal_writeln("");
     
     terminal_setcolor(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
-    terminal_writeln("Note: Unlike Windows or Linux, ALL files are exposed.");
-    terminal_writeln("There are no hidden system files. You can view, edit,");
-    terminal_writeln("and even delete system objects (at your own risk).");
     terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 }

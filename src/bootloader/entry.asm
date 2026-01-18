@@ -35,6 +35,19 @@ protected_entry:
     mov eax, [0x00000500]          ; RAM in MB
     mov [detected_memory_size], eax
 
+    ; NEW: framebuffer mailbox -> globals
+    mov eax, [0x00000504]
+    mov [framebuffer_address], eax
+
+    mov eax, [0x00000508]
+    mov [framebuffer_width], eax
+
+    mov eax, [0x0000050C]
+    mov [framebuffer_height], eax
+
+    mov eax, [0x00000510]
+    mov [framebuffer_pitch], eax
+	
     ; --- Call C kernel ---
     call c_main
 

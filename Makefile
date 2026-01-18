@@ -19,10 +19,14 @@ LDFLAGS = -m elf_i386 -T src/bootloader/stage2.ld -nostdlib
 
 # Bootloader assembly sources
 BOOTLOADER_SRC = src/bootloader/boot.asm
+STAGE15_SRC = src/bootloader/stage15.asm
 ENTRY_ASM = src/bootloader/entry.asm
 PAGING_ASM = src/bootloader/paging_asm.asm
 IDT_ASM = src/bootloader/idt_asm.asm
 IRQ_ASM = src/bootloader/irq_asm.asm
+
+# Stage1.5 size (in sectors). Must match -DSTAGE15_SECTORS passed to boot.asm and stage15.asm
+STAGE15_SECTORS = 8
 
 # C source files (organized by category)
 CORE_SOURCES = \
@@ -79,6 +83,7 @@ C_OBJS = $(foreach src,$(C_SOURCES),build/$(notdir $(basename $(src))).o)
 
 # Final outputs
 BOOTLOADER_BIN = build/bootloader.bin
+STAGE15_BIN = build/stage15.bin
 STAGE2_ELF = build/stage2.elf
 STAGE2_BIN = build/stage2.bin
 DISK_IMG = build/disk.img
@@ -199,25 +204,34 @@ $(STAGE2_BIN): $(STAGE2_ELF)
 	$(OBJCOPY) -O binary $< $@
 	@echo "Stage2 size: $$(wc -c < $@) bytes"
 
-# --- Bootloader (MUST come AFTER stage2.bin) ---
-$(BOOTLOADER_BIN): $(BOOTLOADER_SRC) $(STAGE2_BIN) build
+# --- Stage1.5 (MUST come AFTER stage2.bin so we know STAGE2_SECTORS) ---
+$(STAGE15_BIN): $(STAGE15_SRC) $(STAGE2_BIN) build
+	$(eval STAGE2_SIZE := $(shell stat -c%s $(STAGE2_BIN) 2>/dev/null || echo 512))
+	$(eval STAGE2_SECTORS := $(shell echo $$(( ($(STAGE2_SIZE) + 511) / 512 ))))
+	@echo "Building stage1.5: $(STAGE15_SECTORS) sectors, stage2 = $(STAGE2_SECTORS) sectors"
+	$(AS) -f bin -DSTAGE15_SECTORS=$(STAGE15_SECTORS) -DSTAGE2_SECTORS=$(STAGE2_SECTORS) $< -o $@
+	@echo "Stage1.5 size: $$(wc -c < $@) bytes (expected $$(( $(STAGE15_SECTORS) * 512 )))"
+
+# --- Bootloader stage1 (MUST come AFTER stage2.bin so we know STAGE2_SECTORS) ---
+$(BOOTLOADER_BIN): $(BOOTLOADER_SRC) $(STAGE2_BIN) $(STAGE15_BIN) build
 	@echo "DEBUG: stage2.bin exists: $$(test -f $(STAGE2_BIN) && echo YES || echo NO)"
 	@echo "DEBUG: stage2.bin size: $$(test -f $(STAGE2_BIN) && stat -c%s $(STAGE2_BIN) || echo 0)"
 	$(eval STAGE2_SIZE := $(shell stat -c%s $(STAGE2_BIN) 2>/dev/null || echo 512))
 	$(eval STAGE2_SECTORS := $(shell echo $$(( ($(STAGE2_SIZE) + 511) / 512 ))))
-	@echo "Building bootloader: stage2 = $(STAGE2_SIZE) bytes ($(STAGE2_SECTORS) sectors)"
-	$(AS) -f bin -DSTAGE2_SECTORS=$(STAGE2_SECTORS) $< -o $@
+	@echo "Building bootloader (stage1): stage15=$(STAGE15_SECTORS) sectors, stage2=$(STAGE2_SECTORS) sectors"
+	$(AS) -f bin -DSTAGE15_SECTORS=$(STAGE15_SECTORS) -DSTAGE2_SECTORS=$(STAGE2_SECTORS) $< -o $@
 
 # --- Disk image ---
-$(DISK_IMG): $(BOOTLOADER_BIN) $(STAGE2_BIN)
+$(DISK_IMG): $(BOOTLOADER_BIN) $(STAGE15_BIN) $(STAGE2_BIN)
 	$(eval STAGE2_SIZE := $(shell stat -c%s $(STAGE2_BIN) 2>/dev/null || echo 512))
 	$(eval STAGE2_SECTORS := $(shell echo $$(( ($(STAGE2_SIZE) + 511) / 512 ))))
-	$(eval DISK_SECTORS := $(shell echo $$(( $(STAGE2_SECTORS) + 200 ))))
+	$(eval DISK_SECTORS := $(shell echo $$(( 1 + $(STAGE15_SECTORS) + $(STAGE2_SECTORS) + 200 ))))
 	@echo "Creating disk image: $(DISK_SECTORS) sectors total"
 	dd if=/dev/zero of=$(DISK_IMG) bs=512 count=$(DISK_SECTORS) 2>/dev/null
 	dd if=$(BOOTLOADER_BIN) of=$(DISK_IMG) conv=notrunc 2>/dev/null
-	dd if=$(STAGE2_BIN) of=$(DISK_IMG) bs=512 seek=1 conv=notrunc 2>/dev/null
-	@echo "Build complete! Bootloader + $(STAGE2_SECTORS) kernel sectors"
+	dd if=$(STAGE15_BIN)   of=$(DISK_IMG) bs=512 seek=1 conv=notrunc 2>/dev/null
+	dd if=$(STAGE2_BIN)    of=$(DISK_IMG) bs=512 seek=$$((1 + $(STAGE15_SECTORS))) conv=notrunc 2>/dev/null
+	@echo "Build complete! stage15=$(STAGE15_SECTORS) sectors, stage2=$(STAGE2_SECTORS) sectors"
 
 # --- Run in QEMU ---
 run: $(DISK_IMG)
@@ -227,14 +241,12 @@ run: $(DISK_IMG)
 	        -no-reboot -no-shutdown \
 	        -d int,cpu_reset,guest_errors -D qemu.log
 
-
 debug: $(DISK_IMG)
 	$(QEMU) -m 256 \
 	        -drive file=$(DISK_IMG),format=raw,if=ide \
 	        -serial stdio \
 	        -no-reboot -no-shutdown \
 	        -d int,cpu_reset,guest_errors -D qemu.log
-
 
 serial: $(DISK_IMG)
 	$(QEMU) -hda $(DISK_IMG) -serial stdio
