@@ -1,318 +1,339 @@
 ; src/bootloader/stage15.asm
-; Stage 1.5 loader (real mode) loaded by stage1 at 0x00008000.
-; Responsibilities:
-;  - E820 RAM detect -> store MB at 0x00000500
-;  - VBE set LFB mode -> store fb info at 0x00000504..0x00000510
-;  - Load stage2.bin to 0x00010000
-;  - Enter protected mode, copy stage2 to 0x00100000, jump
+; Stage1.5: loads stage2 (kernel.bin) from disk using INT 13h Extensions,
+;           bounce-buffering below 1MiB, then copies to 1MiB in protected mode,
+;           then enters long mode and jumps to 0x00100000 with EAX=mem_MB.
 
 BITS 16
-ORG 0x8000
+ORG 0x7E00
+default rel
 
-start15:
+%ifndef STAGE2_SECTORS
+%define STAGE2_SECTORS 168
+%endif
+
+%ifndef STAGE15_SECTORS
+    ; Pass1 sizing may not define it; any value is OK there.
+    %define STAGE15_SECTORS 64
+%endif
+
+; LBA layout:
+; LBA 0      = MBR
+; LBA 1..    = stage1.5 (STAGE15_SECTORS)
+; next       = stage2
+STAGE2_LBA       equ (1 + STAGE15_SECTORS)
+
+; We cannot reliably DMA to 0x00100000 in real mode via DAP seg:off.
+KERNEL_LOAD_PM   equ 0x00100000        ; final location expected by your linker
+KERNEL_BOUNCE_RM equ 0x00010000        ; bounce buffer in low memory (<1MiB)
+BOOTINFO_ADDR    equ 0x00009000
+BOOTINFO_MEM_MB  equ BOOTINFO_ADDR
+
+; Conservative BIOS read chunk.
+MAX_SECTORS_PER_READ equ 0x007F        ; 127
+
+start:
     cli
     xor ax, ax
     mov ds, ax
+    mov es, ax
     mov ss, ax
-    mov sp, 0x7C00
+    mov sp, 0x7E00
     sti
 
-    ; DL = boot drive from stage1
     mov [boot_drive], dl
 
-    ; ------------------------------------------------------------
-    ; Detect memory via E820 and store TOTAL USABLE RAM in MB at 0x500
-    ; 0x500 = detected_mem_mb (DWORD)
-    ; ------------------------------------------------------------
-    call detect_memory_e820_mb
+    call enable_a20
+    call detect_memory_e820
+    call load_kernel_lba_bounce
 
-    ; ------------------------------------------------------------
-    ; Try set VBE LFB mode and store framebuffer info in mailbox:
-    ; 0x504=addr, 0x508=width, 0x50C=height, 0x510=pitch
-    ; ------------------------------------------------------------
-    call vbe_try_set_lfb
-
-    ; --- Enable A20 early (safe) ---
-    in al, 0x92
-    or al, 2
-    out 0x92, al
-
-    ; --- Load stage2 BELOW 1MB at 0x00010000 (ES:BX = 0x1000:0000) ---
-    mov ax, 0x1000
-    mov es, ax
-    xor bx, bx
-
-    ; --- Verify INT 13h extensions present ---
-    mov ax, 0x4100
-    mov bx, 0x55AA
-    mov dl, [boot_drive]
-    int 0x13
-    jc disk_error
-    cmp bx, 0xAA55
-    jne disk_error
-    test cx, 1
-    jz disk_error
-
-    ; --- Prepare Disk Address Packet (DAP) for AH=42h ---
-    ; Stage2 begins AFTER stage1.5:
-    ; LBA0 = stage1, LBA1.. = stage1.5, stage2 starts at LBA (1 + STAGE15_SECTORS)
-    mov dword [dap_lba_low], (1 + STAGE15_SECTORS)
-    mov dword [dap_lba_high], 0
-    mov word  [dap_off], 0x0000
-    mov word  [dap_seg], 0x1000     ; buffer at 0x00010000
-
-    mov cx, STAGE2_SECTORS          ; total sectors to read
-
-.read_loop:
-    mov ax, cx
-    cmp ax, 127                     ; per-call chunk size
-    jbe .chunk_ok
-    mov ax, 127
-.chunk_ok:
-    mov [dap_count], ax
-
-    mov si, dap
-    mov ah, 0x42
-    mov dl, [boot_drive]
-    int 0x13
-    jc disk_error
-
-    ; advance buffer segment by (sectors * 512) / 16 = sectors * 32 paragraphs
-    mov bx, [dap_seg]
-    mov dx, [dap_count]
-    shl dx, 5                       ; *32
-    add bx, dx
-    mov [dap_seg], bx
-
-    ; advance LBA by sectors read
-    movzx ebx, word [dap_count]
-    add dword [dap_lba_low], ebx
-    adc dword [dap_lba_high], 0
-
-    sub cx, [dap_count]
-    jnz .read_loop
-
-    ; --- Load GDT and enter protected mode ---
     cli
-    lgdt [gdt_descriptor]
+    lgdt [gdt_desc]
+
     mov eax, cr0
     or eax, 1
     mov cr0, eax
-    jmp 0x08:pm32
+    jmp CODE32_SEL:pm32_entry
 
 ; -------------------------
-; 32-bit protected-mode stub
+; Real mode helpers
 ; -------------------------
-BITS 32
-pm32:
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-    mov ss, ax
-    mov esp, 0x00090000
+enable_a20:
+    in  al, 0x92
+    or  al, 00000010b
+    out 0x92, al
+    ret
 
-    cld
-
-    ; Copy stage2 from 0x00010000 -> 0x00100000
-    mov esi, 0x00010000
-    mov edi, 0x00100000
-    mov ecx, (STAGE2_SECTORS * 512) / 4
-    rep movsd
-
-    ; Jump to stage2 entry (linked at 1MB)
-    jmp 0x08:0x00100000
-
-; -------------------------
-; Error printing (real mode)
-; -------------------------
-BITS 16
-disk_error:
-    mov si, err
-.print:
-    lodsb
-    test al, al
-    jz $
-    mov ah, 0x0E
-    int 0x10
-    jmp .print
-
-; ------------------------------------------------------------
-; E820: Store TOTAL USABLE RAM in MB at 0x00000500 (DWORD)
-; ------------------------------------------------------------
-detect_memory_e820_mb:
+; Store detected memory in MB at BOOTINFO_MEM_MB (E820 max-addr based)
+detect_memory_e820:
     pushad
-    push ds
-    xor ax, ax
-    mov ds, ax
-    push ds
-    pop es
+    xor ebx, ebx
+    mov dword [BOOTINFO_MEM_MB], 16
 
-    ; total bytes = 0 (64-bit at mem_total_lo/hi)
-    mov dword [mem_total_lo], 0
-    mov dword [mem_total_hi], 0
-
-    xor ebx, ebx                    ; continuation = 0
+    xor edi, edi          ; max_end_lo
+    xor esi, esi          ; max_end_hi
 
 .e820_next:
     mov eax, 0xE820
-    mov edx, 0x534D4150             ; 'SMAP'
+    mov edx, 0x534D4150
     mov ecx, 24
-    mov di, e820_buf                ; ES:DI -> buffer in low memory
+    mov di, e820_buf
     int 0x15
-    jc .calc_mb
+    jc .done
     cmp eax, 0x534D4150
-    jne .calc_mb
+    jne .done
 
-    ; if type == 1 usable, add length to total
-    cmp dword [e820_buf + 16], 1
-    jne .skip
+    mov eax, [e820_buf + 16]   ; type
+    cmp eax, 1                 ; usable
+    jne .cont
 
-    mov eax, [e820_buf + 8]         ; length low
-    mov edx, [e820_buf + 12]        ; length high
-    add [mem_total_lo], eax
-    adc [mem_total_hi], edx
+    ; end = base + length (64-bit)
+    mov eax, [e820_buf + 0]
+    mov edx, [e820_buf + 4]
+    add eax, [e820_buf + 8]
+    adc edx, [e820_buf + 12]
 
-.skip:
+    ; track max end address
+    cmp edx, esi
+    jb .cont
+    ja .setmax
+    cmp eax, edi
+    jbe .cont
+.setmax:
+    mov edi, eax
+    mov esi, edx
+
+.cont:
     test ebx, ebx
     jnz .e820_next
 
-.calc_mb:
-    ; MB = bytes >> 20
-    mov eax, [mem_total_lo]
-    mov edx, [mem_total_hi]
-    shrd eax, edx, 20               ; eax = (edx:eax) >> 20
-    mov [0x0500], eax               ; store MB at 0x500
+.done:
+    ; Convert max bytes -> MB (shift right 20)
+    mov eax, edi
+    mov edx, esi
+    mov ecx, 20
+.shift:
+    shrd eax, edx, 1
+    shr  edx, 1
+    loop .shift
 
-    pop ds
+    cmp eax, 16
+    jae .store
+    mov eax, 16
+.store:
+    mov [BOOTINFO_MEM_MB], eax
     popad
     ret
 
-; ---- Scratch for E820 totals/buffer ----
-mem_total_lo: dd 0
-mem_total_hi: dd 0
+e820_buf: times 24 db 0
 
-e820_buf:
-    dq 0                            ; base
-    dq 0                            ; length
-    dd 0                            ; type
-    dd 0                            ; ext attrs (ignored)
-
-; ------------------------------------------------------------
-; VBE: Try to set a linear framebuffer mode and store:
-; 0x504 = fb_addr (DWORD)
-; 0x508 = width   (DWORD)
-; 0x50C = height  (DWORD)
-; 0x510 = pitch   (DWORD)
-; If not available, zero them.
-; ------------------------------------------------------------
-vbe_try_set_lfb:
+; -------------------------
+; Kernel load (bounce buffer) in RM, chunked reads
+; -------------------------
+load_kernel_lba_bounce:
     pushad
-    push ds
-    push es
 
-    xor ax, ax
+    mov dword [cur_lba_lo], STAGE2_LBA
+    mov dword [cur_lba_hi], 0
+    mov dword [cur_addr],   KERNEL_BOUNCE_RM
+    mov cx, STAGE2_SECTORS
+
+.read_loop:
+    cmp cx, 0
+    je .ok
+
+    ; chunk = min(cx, 127)
+    mov ax, cx
+    cmp ax, MAX_SECTORS_PER_READ
+    jbe .chunk_ok
+    mov ax, MAX_SECTORS_PER_READ
+.chunk_ok:
+    mov [chunk_secs], ax
+
+    ; Build DAP for this chunk at current addr
+    mov byte  [dap_size], 0x10
+    mov byte  [dap_res],  0
+
+    mov ax, [chunk_secs]
+    mov word  [dap_secs], ax
+
+    ; Convert linear cur_addr -> seg:off
+    mov eax, [cur_addr]
+    mov bx, ax
+    and bx, 0x000F
+    mov word [dap_off], bx
+    shr eax, 4
+    mov word [dap_seg], ax
+
+    mov eax, [cur_lba_lo]
+    mov [dap_lba_lo], eax
+    mov eax, [cur_lba_hi]
+    mov [dap_lba_hi], eax
+
+    mov si, dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
+    int 0x13
+    jc .fail
+
+    ; Advance addr by chunk*512
+    xor eax, eax
+    mov ax, [chunk_secs]
+    shl eax, 9
+    add dword [cur_addr], eax
+
+    ; Advance LBA by chunk
+    movzx eax, word [chunk_secs]
+    add dword [cur_lba_lo], eax
+    adc dword [cur_lba_hi], 0
+
+    ; Remaining sectors
+    sub cx, [chunk_secs]
+    jmp .read_loop
+
+.ok:
+    popad
+    ret
+
+.fail:
+    mov si, err_kernel
+    call print
+.hang:
+    hlt
+    jmp .hang
+
+chunk_secs dw 0
+cur_addr   dd 0
+cur_lba_lo dd 0
+cur_lba_hi dd 0
+
+; -------------------------
+; Enter 32-bit PM, copy to 1MiB, then go long mode
+; -------------------------
+BITS 32
+pm32_entry:
+    mov ax, DATA32_SEL
     mov ds, ax
     mov es, ax
+    mov ss, ax
+    mov fs, ax
+    mov gs, ax
+    mov esp, 0x9FC00
 
-    ; Default: no framebuffer (forces VGA text mode)
-    mov dword [0x0504], 0
-    mov dword [0x0508], 0
-    mov dword [0x050C], 0
-    mov dword [0x0510], 0
+    ; Copy stage2 from bounce buffer -> 1MiB
+    mov esi, KERNEL_BOUNCE_RM
+    mov edi, KERNEL_LOAD_PM
+    mov ecx, (STAGE2_SECTORS * 512) / 4
+    rep movsd
 
-    ; Try a short list of common VBE modes.
-    ; We'll accept ONLY 24bpp or 32bpp.
-    mov si, vbe_mode_list
+    call setup_identity_paging
 
-.try_next_mode:
-    lodsw                   ; AX = mode
-    test ax, ax
-    jz .done                ; 0 terminator -> give up
+    ; PAE
+    mov eax, cr4
+    or eax, (1 << 5)
+    mov cr4, eax
 
-    mov cx, ax              ; CX = mode for 4F01
-    mov ax, 0x4F01
-    mov di, 0x0600          ; mode info buffer in low memory
-    int 0x10
-    cmp ax, 0x004F
-    jne .try_next_mode
+    ; LME
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, (1 << 8)
+    wrmsr
 
-    ; BitsPerPixel at offset 0x19
-    mov al, [0x0600 + 0x19]
-    cmp al, 24
-    je .candidate_ok
-    cmp al, 32
-    jne .try_next_mode
+    mov eax, pml4
+    mov cr3, eax
 
-.candidate_ok:
-    ; PhysBasePtr at offset 0x28
-    mov eax, [0x0600 + 0x28]
-    test eax, eax
-    jz .try_next_mode
+    ; PG
+    mov eax, cr0
+    or eax, (1 << 31)
+    mov cr0, eax
 
-    ; Set mode with Linear Framebuffer bit (bit 14)
-    mov bx, cx
-    or bx, 0x4000
-    mov ax, 0x4F02
-    int 0x10
-    cmp ax, 0x004F
-    jne .try_next_mode
+    jmp CODE64_SEL:lm64_entry
 
-    ; Success: store mailbox info
-    mov eax, [0x0600 + 0x28]        ; fb addr
-    mov [0x0504], eax
+; Identity map first 1GiB using 2MiB pages (PML4->PDP->PD)
+setup_identity_paging:
+    mov edi, pml4
+    mov ecx, (4096*3)/4
+    xor eax, eax
+    rep stosd
 
-    movzx eax, word [0x0600 + 0x12] ; Xres
-    mov [0x0508], eax
+    mov eax, pdp
+    or eax, 0x003
+    mov [pml4 + 0], eax
+    mov dword [pml4 + 4], 0
 
-    movzx eax, word [0x0600 + 0x14] ; Yres
-    mov [0x050C], eax
+    mov eax, pd
+    or eax, 0x003
+    mov [pdp + 0], eax
+    mov dword [pdp + 4], 0
 
-    movzx eax, word [0x0600 + 0x10] ; Pitch
-    mov [0x0510], eax
-
-.done:
-    pop es
-    pop ds
-    popad
+    xor ecx, ecx
+.fill_pd:
+    mov eax, ecx
+    shl eax, 21
+    or eax, 0x083
+    mov [pd + ecx*8 + 0], eax
+    mov dword [pd + ecx*8 + 4], 0
+    inc ecx
+    cmp ecx, 512
+    jne .fill_pd
     ret
 
-vbe_mode_list:
-    dw 0x11B     ; often 1280x1024x32 (not guaranteed)
-    dw 0x118     ; often 1024x768x24/32 or 16 depending
-    dw 0x117     ; often 1024x768
-    dw 0x115     ; often 800x600
-    dw 0x114     ; often 800x600
-    dw 0x0000
+ALIGN 4096
+pml4: times 4096 db 0
+pdp:  times 4096 db 0
+pd:   times 4096 db 0
 
 ; -------------------------
-; Data
+; 64-bit entry: pass mem MB in EAX -> your entry.asm stores it
 ; -------------------------
+BITS 64
+lm64_entry:
+    mov eax, dword [BOOTINFO_MEM_MB]
+    mov rbx, KERNEL_LOAD_PM
+    jmp rbx
+
+; -------------------------
+; Print (16-bit)
+; -------------------------
+BITS 16
+print:
+    mov ah, 0x0E
+.next:
+    lodsb
+    test al, al
+    jz .done
+    int 0x10
+    jmp .next
+.done:
+    ret
+
 boot_drive db 0
-err db "Stage15 disk error", 0
+err_kernel db "Boot2: kernel read failed", 0
 
-; ---- Disk Address Packet (DAP) ----
+; ONE DAP ONLY
 dap:
-    db 0x10, 0x00
-dap_count:   dw 0
-dap_off:     dw 0
-dap_seg:     dw 0
-dap_lba_low: dd 0
-dap_lba_high:dd 0
+dap_size   db 0
+dap_res    db 0
+dap_secs   dw 0
+dap_off    dw 0
+dap_seg    dw 0
+dap_lba_lo dd 0
+dap_lba_hi dd 0
 
-; ---- GDT ----
 ALIGN 8
-gdt_start:
-    dq 0x0000000000000000
-    dq 0x00CF9A000000FFFF   ; code (0x08)
-    dq 0x00CF92000000FFFF   ; data (0x10)
+gdt:
+dq 0
+dq 0x00CF9A000000FFFF
+dq 0x00CF92000000FFFF
+dq 0x00AF9A000000FFFF
+dq 0x00AF92000000FFFF
+
+gdt_desc:
+dw gdt_end - gdt - 1
+dd gdt
+dd 0
 gdt_end:
 
-gdt_descriptor:
-    dw gdt_end - gdt_start - 1
-    dd gdt_start
-
-; ------------------------------------------------------------
-; Pad stage1.5 to an even number of sectors so stage2 starts
-; exactly at LBA (1 + STAGE15_SECTORS)
-; ------------------------------------------------------------
-TIMES (STAGE15_SECTORS*512) - ($-$$) db 0
+CODE32_SEL equ 0x08
+DATA32_SEL equ 0x10
+CODE64_SEL equ 0x18
+DATA64_SEL equ 0x20

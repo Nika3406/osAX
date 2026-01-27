@@ -1,68 +1,55 @@
 ; src/bootloader/entry.asm
-BITS 32
+; 64-bit kernel entry point. Expects:
+;   RAX/EAX = detected memory size in MB (passed from stage1.5)
 
-; ---- entry code must be in TEXT ----
-section .text.entry
-align 16
-global protected_entry
-extern c_main
-extern __bss_start
-extern __bss_end
+BITS 64
+default rel
 
-protected_entry:
+SECTION .text
+GLOBAL _start
+EXTERN c_main
+
+; Exposed globals used by C code
+GLOBAL detected_memory_size
+GLOBAL framebuffer_address
+GLOBAL framebuffer_width
+GLOBAL framebuffer_height
+GLOBAL framebuffer_pitch
+
+_start:
     cli
-    cld
-    rep stosb	
 
-    ; --- Setup segments ---
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
+    ; Set up a known-good stack (identity-mapped low memory)
+    lea rsp, [rel stack_top]
+    and rsp, -16
 
-    ; --- Stack (2MB is fine in QEMU, but 0x90000 is safer early-on) ---
-    mov esp, 0x00090000
+    ; Store detected memory (MB) into global expected by memory.c
+    mov dword [rel detected_memory_size], eax
 
-    ; --- Clear .bss ---
-    mov edi, __bss_start
-    mov ecx, __bss_end
-    sub ecx, edi
-    xor eax, eax
-    rep stosb
+    ; No VBE/graphics framebuffer for now -> force VGA text path
+    xor rax, rax
+    mov qword [rel framebuffer_address], rax
+    mov qword [rel framebuffer_width],   rax
+    mov qword [rel framebuffer_height],  rax
+    mov qword [rel framebuffer_pitch],   rax
 
-    mov eax, [0x00000500]          ; RAM in MB
-    mov [detected_memory_size], eax
-
-    ; NEW: framebuffer mailbox -> globals
-    mov eax, [0x00000504]
-    mov [framebuffer_address], eax
-
-    mov eax, [0x00000508]
-    mov [framebuffer_width], eax
-
-    mov eax, [0x0000050C]
-    mov [framebuffer_height], eax
-
-    mov eax, [0x00000510]
-    mov [framebuffer_pitch], eax
-	
-    ; --- Call C kernel ---
+    ; Enter C core init
     call c_main
 
 .hang:
-    cli
     hlt
     jmp .hang
 
-; ---- data goes in DATA ----
-section .data
-align 4
-global framebuffer_address, framebuffer_width, framebuffer_height, framebuffer_pitch, detected_memory_size
+SECTION .bss
+ALIGN 16
+detected_memory_size: resd 1
 
-framebuffer_address:  dd 0
-framebuffer_width:    dd 0
-framebuffer_height:   dd 0
-framebuffer_pitch:    dd 0
-detected_memory_size: dd 0
+ALIGN 8
+framebuffer_address: resq 1
+framebuffer_width:   resq 1
+framebuffer_height:  resq 1
+framebuffer_pitch:   resq 1
+
+ALIGN 16
+stack_bottom: resb 65536
+stack_top:

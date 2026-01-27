@@ -1,4 +1,4 @@
-// src/kernel/paging.c - FIXED VERSION - Extended identity mapping
+// src/kernel/memory/paging.c - x86_64 VERSION (4-level paging)
 #include "types.h"
 #include "paging.h"
 #include "physical_mm.h"
@@ -6,88 +6,105 @@
 #include "memory.h"
 #include "serial.h"
 
-extern uint32_t framebuffer_address;
-extern uint32_t framebuffer_width;
-extern uint32_t framebuffer_height;
-extern uint32_t framebuffer_pitch;
+extern uint64_t framebuffer_address;
+extern uint64_t framebuffer_width;
+extern uint64_t framebuffer_height;
+extern uint64_t framebuffer_pitch;
 
-// Global kernel page directory
+// Global kernel page directory (PML4)
 static page_directory_t* kernel_page_dir = 0;
-static page_table_t* kernel_page_tables[1024] = {0};
+
+// Page tables for each level (we'll allocate as needed)
+static page_table_t* kernel_page_tables[512][512] = {{0}};  // PDP and PD levels
 
 // Current page directory
 page_directory_t* current_directory = 0;
 
 // Kernel heap manager with free list support
 typedef struct free_region {
-    uint32_t start;
-    uint32_t size;
+    uint64_t start;
+    uint64_t size;
     struct free_region* next;
 } free_region_t;
 
-static uint32_t kernel_heap_next = KERNEL_HEAP_START;
+static uint64_t kernel_heap_next = KERNEL_HEAP_START;
 static free_region_t* free_list = NULL;
 
-// Allocate a small pool for free list nodes (stored separately from freed memory)
+// Allocate a small pool for free list nodes
 #define MAX_FREE_REGIONS 64
 static free_region_t free_region_pool[MAX_FREE_REGIONS];
 static uint32_t free_region_pool_used = 0;
 
-extern void load_page_directory(uint32_t);
+extern void load_page_directory(uint64_t);
 extern void enable_paging_asm(void);
 
 // Helper: Get physical address from virtual address
-static uint32_t get_physical_address(page_directory_t* dir, uint32_t virtual_addr) {
-    (void)dir;
-    uint32_t page_dir_idx = PAGE_DIRECTORY_INDEX(virtual_addr);
-    uint32_t page_tbl_idx = PAGE_TABLE_INDEX(virtual_addr);
+uint64_t get_physical_address(page_directory_t* pml4, uint64_t virtual_addr) {
+    (void)pml4;  // We use kernel_page_dir for now
+    
+    uint64_t pml4_idx = PML4_INDEX(virtual_addr);
+    uint64_t pdp_idx = PDP_INDEX(virtual_addr);
+    uint64_t pd_idx = PD_INDEX(virtual_addr);
+    uint64_t pt_idx = PT_INDEX(virtual_addr);
 
-    page_table_t* table = kernel_page_tables[page_dir_idx];
-    if (!table || !table->pages[page_tbl_idx].present) {
-        return 0;  // Not mapped
+    // Check PML4 entry
+    if (!kernel_page_dir->entries[pml4_idx].present) {
+        return 0;
     }
 
-    return (table->pages[page_tbl_idx].frame << 12) | (virtual_addr & 0xFFF);
+    // Get PDP table
+    page_table_t* pdp = (page_table_t*)(kernel_page_dir->entries[pml4_idx].frame << 12);
+    if (!pdp->entries[pdp_idx].present) {
+        return 0;
+    }
+
+    // Get PD table
+    page_table_t* pd = (page_table_t*)(pdp->entries[pdp_idx].frame << 12);
+    if (!pd->entries[pd_idx].present) {
+        return 0;
+    }
+
+    // Get PT table
+    page_table_t* pt = (page_table_t*)(pd->entries[pd_idx].frame << 12);
+    if (!pt->entries[pt_idx].present) {
+        return 0;
+    }
+
+    return (pt->entries[pt_idx].frame << 12) | (virtual_addr & 0xFFF);
 }
 
-void switch_page_directory(page_directory_t* dir) {
-    current_directory = dir;
-    uintptr_t dir_physical = (uintptr_t)&dir->tables;
-    load_page_directory((uint32_t)dir_physical);
+void switch_page_directory(page_directory_t* pml4) {
+    current_directory = pml4;
+    uint64_t pml4_physical = (uint64_t)pml4;
+    load_page_directory(pml4_physical);
 }
 
 static void paging_map_framebuffer(void) {
     // CRITICAL: Validate framebuffer address before mapping
     if (framebuffer_address == 0 || 
-        framebuffer_address == 0xFFFFFFFF ||
+        framebuffer_address == 0xFFFFFFFFFFFFFFFFULL ||
         framebuffer_address == 0xB8000) {
         kprintf("PAGING: No graphics framebuffer (using VGA text mode)\n");
         return;
     }
     
-    // Additional validation: check if address is in valid range
-    if (framebuffer_address < 0xA0000 || framebuffer_address > 0xFFFFFFFF) {
-        kprintf("PAGING: Invalid framebuffer address 0x%08x\n", framebuffer_address);
-        return;
-    }
-    
-    kprintf("PAGING: Mapping framebuffer at 0x%08x...\n", framebuffer_address);
+    kprintf("PAGING: Mapping framebuffer at 0x%llx...\n", framebuffer_address);
     
     // Calculate size
-    uint32_t fb_size = framebuffer_pitch * framebuffer_height;
-    uint32_t fb_pages = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t fb_size = framebuffer_pitch * framebuffer_height;
+    uint64_t fb_pages = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
     
-    kprintf("PAGING: Framebuffer: %dx%d, pitch=%d, size=%d KB (%d pages)\n",
+    kprintf("PAGING: Framebuffer: %lldx%lld, pitch=%lld, size=%lld KB (%lld pages)\n",
             framebuffer_width, framebuffer_height, framebuffer_pitch,
             fb_size / 1024, fb_pages);
     
     // Align to page boundary
-    uint32_t fb_start = framebuffer_address & ~0xFFF;
+    uint64_t fb_start = framebuffer_address & ~0xFFF;
     
     // Identity map all framebuffer pages
-    for (uint32_t i = 0; i < fb_pages; i++) {
-        uint32_t phys_addr = fb_start + (i * PAGE_SIZE);
-        uint32_t virt_addr = phys_addr;  // Identity mapping
+    for (uint64_t i = 0; i < fb_pages; i++) {
+        uint64_t phys_addr = fb_start + (i * PAGE_SIZE);
+        uint64_t virt_addr = phys_addr;  // Identity mapping
         
         map_page(kernel_page_dir, virt_addr, phys_addr, PAGE_WRITABLE);
     }
@@ -95,54 +112,53 @@ static void paging_map_framebuffer(void) {
     kprintf("PAGING: Framebuffer mapped successfully\n");
 }
 
-// In paging_init(), add the call:
 void paging_init(void) {
-    kprintf("PAGING: Initializing virtual memory system...\n");
+    kprintf("PAGING: Initializing x86_64 4-level paging...\n");
 
-    // Create kernel page directory
+    // Create kernel PML4 (top-level page directory)
     kernel_page_dir = (page_directory_t*)alloc_page();
     memset(kernel_page_dir, 0, sizeof(page_directory_t));
 
-    // Identity map first 32MB (8 page tables)
+    // Identity map first 32MB using 2MB huge pages for simplicity
     kprintf("PAGING: Creating identity mapping for first 32MB...\n");
 
-    for (uint32_t i = 0; i < 8; i++) {
-        page_table_t* table = (page_table_t*)alloc_page();
-        memset(table, 0, sizeof(page_table_t));
-
-        for (uint32_t j = 0; j < 1024; j++) {
-            uint32_t physical_addr = (i * 1024 + j) * PAGE_SIZE;
-            table->pages[j].present = 1;
-            table->pages[j].rw = 1;
-            table->pages[j].user = 0;
-            table->pages[j].frame = physical_addr >> 12;
-        }
-
-        kernel_page_dir->tables[i].present = 1;
-        kernel_page_dir->tables[i].rw = 1;
-        kernel_page_dir->tables[i].user = 0;
-        kernel_page_dir->tables[i].table_addr = ((uintptr_t)table) >> 12;
-
-        kernel_page_tables[i] = table;
+    // We need: PML4[0] -> PDP[0] -> PD[0..15] with 2MB pages
+    // For 32MB: 16 x 2MB pages
+    
+    // Allocate PDP for first PML4 entry
+    page_table_t* pdp = (page_table_t*)alloc_page();
+    memset(pdp, 0, sizeof(page_table_t));
+    
+    kernel_page_dir->entries[0].present = 1;
+    kernel_page_dir->entries[0].rw = 1;
+    kernel_page_dir->entries[0].user = 0;
+    kernel_page_dir->entries[0].frame = ((uint64_t)pdp) >> 12;
+    
+    // Allocate PD for first PDP entry
+    page_table_t* pd = (page_table_t*)alloc_page();
+    memset(pd, 0, sizeof(page_table_t));
+    
+    pdp->entries[0].present = 1;
+    pdp->entries[0].rw = 1;
+    pdp->entries[0].user = 0;
+    pdp->entries[0].frame = ((uint64_t)pd) >> 12;
+    
+    // Create 16 x 2MB huge pages (32MB total)
+    for (uint32_t i = 0; i < 16; i++) {
+        pd->entries[i].present = 1;
+        pd->entries[i].rw = 1;
+        pd->entries[i].user = 0;
+        pd->entries[i].pat = 1;  // Use as huge page bit
+        pd->entries[i].frame = (i * 0x200000) >> 12;  // 2MB increments
     }
 
-    kprintf("PAGING: Mapping kernel to higher half (0xC0000000)...\n");
-
-    // Map kernel to higher half
-    uint32_t kernel_physical_start = 0x100000;
-    uint32_t kernel_virtual_start = KERNEL_VIRTUAL_BASE;
-    uint32_t kernel_size_pages = (0x400000 + PAGE_SIZE - 1) / PAGE_SIZE;
-
-    for (uint32_t i = 0; i < kernel_size_pages; i++) {
-        uint32_t virtual_addr = kernel_virtual_start + i * PAGE_SIZE;
-        uint32_t physical_addr = kernel_physical_start + i * PAGE_SIZE;
-        map_page(kernel_page_dir, virtual_addr, physical_addr, PAGE_WRITABLE);
-    }
-
+    kprintf("PAGING: Identity mapping complete (using 2MB pages)\n");
+    
+    // Map VGA buffer
     kprintf("PAGING: Mapping VGA buffer...\n");
-    map_page(kernel_page_dir, 0xC00B8000, 0xB8000, PAGE_WRITABLE);
+    map_page(kernel_page_dir, 0xB8000, 0xB8000, PAGE_WRITABLE);
 
-    // NEW: Map framebuffer (if present)
+    // Map framebuffer (if present)
     paging_map_framebuffer();
 
     kprintf("PAGING: Enabling paging...\n");
@@ -153,41 +169,81 @@ void paging_init(void) {
     kprintf("PAGING: Virtual memory enabled successfully!\n");
 }
 
-void map_page(page_directory_t* dir, uint32_t virtual_addr, uint32_t physical_addr, uint32_t flags) {
-    uint32_t page_dir_idx = PAGE_DIRECTORY_INDEX(virtual_addr);
-    uint32_t page_tbl_idx = PAGE_TABLE_INDEX(virtual_addr);
+void map_page(page_directory_t* pml4, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags) {
+    uint64_t pml4_idx = PML4_INDEX(virtual_addr);
+    uint64_t pdp_idx = PDP_INDEX(virtual_addr);
+    uint64_t pd_idx = PD_INDEX(virtual_addr);
+    uint64_t pt_idx = PT_INDEX(virtual_addr);
 
-    page_table_t* table = kernel_page_tables[page_dir_idx];
-    if (!table) {
-        table = (page_table_t*)alloc_page();
-        memset(table, 0, sizeof(page_table_t));
-
-        dir->tables[page_dir_idx].present = 1;
-        dir->tables[page_dir_idx].rw = (flags & PAGE_WRITABLE) ? 1 : 0;
-        dir->tables[page_dir_idx].user = (flags & PAGE_USER) ? 1 : 0;
-        dir->tables[page_dir_idx].table_addr = ((uintptr_t)table) >> 12;
-
-        kernel_page_tables[page_dir_idx] = table;
+    // Ensure PML4 entry exists
+    if (!pml4->entries[pml4_idx].present) {
+        page_table_t* pdp = (page_table_t*)alloc_page();
+        memset(pdp, 0, sizeof(page_table_t));
+        
+        pml4->entries[pml4_idx].present = 1;
+        pml4->entries[pml4_idx].rw = 1;
+        pml4->entries[pml4_idx].user = (flags & PAGE_USER) ? 1 : 0;
+        pml4->entries[pml4_idx].frame = ((uint64_t)pdp) >> 12;
     }
 
-    table->pages[page_tbl_idx].present = 1;
-    table->pages[page_tbl_idx].rw = (flags & PAGE_WRITABLE) ? 1 : 0;
-    table->pages[page_tbl_idx].user = (flags & PAGE_USER) ? 1 : 0;
-    table->pages[page_tbl_idx].frame = physical_addr >> 12;
+    // Get PDP
+    page_table_t* pdp = (page_table_t*)(pml4->entries[pml4_idx].frame << 12);
 
-    __asm__ volatile ("invlpg (%0)" : : "r" (virtual_addr));
+    // Ensure PDP entry exists
+    if (!pdp->entries[pdp_idx].present) {
+        page_table_t* pd = (page_table_t*)alloc_page();
+        memset(pd, 0, sizeof(page_table_t));
+        
+        pdp->entries[pdp_idx].present = 1;
+        pdp->entries[pdp_idx].rw = 1;
+        pdp->entries[pdp_idx].user = (flags & PAGE_USER) ? 1 : 0;
+        pdp->entries[pdp_idx].frame = ((uint64_t)pd) >> 12;
+    }
+
+    // Get PD
+    page_table_t* pd = (page_table_t*)(pdp->entries[pdp_idx].frame << 12);
+
+    // Ensure PD entry exists
+    if (!pd->entries[pd_idx].present) {
+        page_table_t* pt = (page_table_t*)alloc_page();
+        memset(pt, 0, sizeof(page_table_t));
+        
+        pd->entries[pd_idx].present = 1;
+        pd->entries[pd_idx].rw = 1;
+        pd->entries[pd_idx].user = (flags & PAGE_USER) ? 1 : 0;
+        pd->entries[pd_idx].frame = ((uint64_t)pt) >> 12;
+    }
+
+    // Get PT and set final mapping
+    page_table_t* pt = (page_table_t*)(pd->entries[pd_idx].frame << 12);
+    
+    pt->entries[pt_idx].present = 1;
+    pt->entries[pt_idx].rw = (flags & PAGE_WRITABLE) ? 1 : 0;
+    pt->entries[pt_idx].user = (flags & PAGE_USER) ? 1 : 0;
+    pt->entries[pt_idx].frame = physical_addr >> 12;
+
+    invlpg(virtual_addr);
 }
 
-void unmap_page(page_directory_t* dir, uint32_t virtual_addr) {
-    (void)dir;
-    uint32_t page_dir_idx = PAGE_DIRECTORY_INDEX(virtual_addr);
-    uint32_t page_tbl_idx = PAGE_TABLE_INDEX(virtual_addr);
+void unmap_page(page_directory_t* pml4, uint64_t virtual_addr) {
+    (void)pml4;
+    uint64_t pt_idx = PT_INDEX(virtual_addr);
+    uint64_t pd_idx = PD_INDEX(virtual_addr);
+    uint64_t pdp_idx = PDP_INDEX(virtual_addr);
+    uint64_t pml4_idx = PML4_INDEX(virtual_addr);
 
-    page_table_t* table = kernel_page_tables[page_dir_idx];
-    if (table) {
-        table->pages[page_tbl_idx].present = 0;
-        __asm__ volatile ("invlpg (%0)" : : "r" (virtual_addr));
-    }
+    if (!kernel_page_dir->entries[pml4_idx].present) return;
+    
+    page_table_t* pdp = (page_table_t*)(kernel_page_dir->entries[pml4_idx].frame << 12);
+    if (!pdp->entries[pdp_idx].present) return;
+    
+    page_table_t* pd = (page_table_t*)(pdp->entries[pdp_idx].frame << 12);
+    if (!pd->entries[pd_idx].present) return;
+    
+    page_table_t* pt = (page_table_t*)(pd->entries[pd_idx].frame << 12);
+    pt->entries[pt_idx].present = 0;
+    
+    invlpg(virtual_addr);
 }
 
 page_directory_t* get_kernel_page_dir(void) {
@@ -203,17 +259,17 @@ static free_region_t* alloc_free_region_node(void) {
     return &free_region_pool[free_region_pool_used++];
 }
 
-void* kmalloc_virtual(uint32_t size) {
-    uint32_t pages_needed = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    uint32_t total_size = pages_needed * PAGE_SIZE;
+void* kmalloc_virtual(size_t size) {
+    uint64_t pages_needed = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t total_size = pages_needed * PAGE_SIZE;
 
-    kprintf("KMALLOC_VIRTUAL: Allocating %d bytes (%d pages)\n", size, pages_needed);
+    kprintf("KMALLOC_VIRTUAL: Allocating %lld bytes (%lld pages)\n", (uint64_t)size, pages_needed);
     
     // Try to find space in free list first
     free_region_t** current = &free_list;
     while (*current) {
         if ((*current)->size >= total_size) {
-            uint32_t virtual_start = (*current)->start;
+            uint64_t virtual_start = (*current)->start;
 
             // Remove from free list or shrink
             if ((*current)->size == total_size) {
@@ -224,16 +280,16 @@ void* kmalloc_virtual(uint32_t size) {
             }
 
             // Allocate physical pages and map
-            uintptr_t physical = (uintptr_t)alloc_pages(pages_needed);
+            void* physical = alloc_pages(pages_needed);
             if (!physical) return NULL;
 
-            for (uint32_t i = 0; i < pages_needed; i++) {
-                uint32_t virtual_addr = virtual_start + i * PAGE_SIZE;
-                uint32_t physical_addr = (uint32_t)(physical + i * PAGE_SIZE);
+            for (uint64_t i = 0; i < pages_needed; i++) {
+                uint64_t virtual_addr = virtual_start + i * PAGE_SIZE;
+                uint64_t physical_addr = (uint64_t)physical + i * PAGE_SIZE;
                 map_page(kernel_page_dir, virtual_addr, physical_addr, PAGE_WRITABLE);
             }
 
-            return (void*)(uintptr_t)virtual_start;
+            return (void*)virtual_start;
         }
         current = &(*current)->next;
     }
@@ -244,55 +300,49 @@ void* kmalloc_virtual(uint32_t size) {
         return NULL;
     }
 
-    uintptr_t physical = (uintptr_t)alloc_pages(pages_needed);
+    void* physical = alloc_pages(pages_needed);
     if (!physical) {
         kprintf("KMALLOC: Out of physical memory!\n");
         return NULL;
     }
 
-    for (uint32_t i = 0; i < pages_needed; i++) {
-        uint32_t virtual_addr = kernel_heap_next + i * PAGE_SIZE;
-        uint32_t physical_addr = (uint32_t)(physical + i * PAGE_SIZE);
+    for (uint64_t i = 0; i < pages_needed; i++) {
+        uint64_t virtual_addr = kernel_heap_next + i * PAGE_SIZE;
+        uint64_t physical_addr = (uint64_t)physical + i * PAGE_SIZE;
         map_page(kernel_page_dir, virtual_addr, physical_addr, PAGE_WRITABLE);
-        
-        // Debug: print first few mappings
-        if (i < 3 || i == pages_needed - 1) {
-            kprintf("  Mapped page %d: virt=0x%08x -> phys=0x%08x\n", 
-                    i, virtual_addr, physical_addr);
-        }
     }
     
-    void* result = (void*)(uintptr_t)kernel_heap_next;
+    void* result = (void*)kernel_heap_next;
     kernel_heap_next += total_size;
     
-    kprintf("KMALLOC_VIRTUAL: Returning 0x%08x\n", (uint32_t)result);
+    kprintf("KMALLOC_VIRTUAL: Returning 0x%llx\n", (uint64_t)result);
 
     return result;
 }
 
-void kfree_virtual(void* ptr, uint32_t size) {
+void kfree_virtual(void* ptr, size_t size) {
     if (!ptr) return;
 
-    uint32_t pages_freed = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    uint32_t virtual_start = (uint32_t)(uintptr_t)ptr;
+    uint64_t pages_freed = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t virtual_start = (uint64_t)ptr;
 
     // Free physical pages FIRST, then unmap
-    for (uint32_t i = 0; i < pages_freed; i++) {
-        uint32_t virtual_addr = virtual_start + i * PAGE_SIZE;
-        uint32_t physical_addr = get_physical_address(kernel_page_dir, virtual_addr);
+    for (uint64_t i = 0; i < pages_freed; i++) {
+        uint64_t virtual_addr = virtual_start + i * PAGE_SIZE;
+        uint64_t physical_addr = get_physical_address(kernel_page_dir, virtual_addr);
 
         if (physical_addr) {
-            free_page((void*)(uintptr_t)(physical_addr & 0xFFFFF000));
+            free_page((void*)(physical_addr & 0xFFFFFFFFFFFFF000ULL));
         }
     }
 
     // Now unmap the pages
-    for (uint32_t i = 0; i < pages_freed; i++) {
-        uint32_t virtual_addr = virtual_start + i * PAGE_SIZE;
+    for (uint64_t i = 0; i < pages_freed; i++) {
+        uint64_t virtual_addr = virtual_start + i * PAGE_SIZE;
         unmap_page(kernel_page_dir, virtual_addr);
     }
 
-    // Add to free list using separate pool
+    // Add to free list
     free_region_t* region = alloc_free_region_node();
     if (region) {
         region->start = virtual_start;
@@ -302,28 +352,28 @@ void kfree_virtual(void* ptr, uint32_t size) {
     }
 }
 
-void* physical_to_virtual(uint32_t physical_addr) {
-    static uint32_t device_virtual_next = 0xD0000000;
+void* physical_to_virtual(uint64_t physical_addr, size_t size) {
+    (void)size;  // Not used in simple implementation
+    static uint64_t device_virtual_next = 0xFFFFFF8000000000ULL;  // High address for devices
 
-    uint32_t virtual_addr = device_virtual_next;
+    uint64_t virtual_addr = device_virtual_next;
     device_virtual_next += PAGE_SIZE;
 
     map_page(kernel_page_dir, virtual_addr, physical_addr, PAGE_WRITABLE);
-    return (void*)(uintptr_t)virtual_addr;
+    return (void*)virtual_addr;
 }
 
-void page_fault_handler(uint32_t error_code) {
-    uint32_t faulting_address;
-    __asm__ volatile("mov %%cr2, %0" : "=r" (faulting_address));
+void page_fault_handler(uint64_t error_code) {
+    uint64_t faulting_address = read_cr2();
 
     kprintf("\n!!! PAGE FAULT !!!\n");
-    kprintf("Faulting address: %x\n", faulting_address);
-    kprintf("Error code: %x\n", error_code);
-    kprintf("  Present: %d\n", error_code & 0x1);
-    kprintf("  Write: %d\n", (error_code & 0x2) >> 1);
-    kprintf("  User: %d\n", (error_code & 0x4) >> 2);
-    kprintf("  Reserved: %d\n", (error_code & 0x8) >> 3);
-    kprintf("  Instruction fetch: %d\n", (error_code & 0x10) >> 4);
+    kprintf("Faulting address: 0x%llx\n", faulting_address);
+    kprintf("Error code: 0x%llx\n", error_code);
+    kprintf("  Present: %d\n", (int)(error_code & 0x1));
+    kprintf("  Write: %d\n", (int)((error_code & 0x2) >> 1));
+    kprintf("  User: %d\n", (int)((error_code & 0x4) >> 2));
+    kprintf("  Reserved: %d\n", (int)((error_code & 0x8) >> 3));
+    kprintf("  Instruction fetch: %d\n", (int)((error_code & 0x10) >> 4));
 
     for(;;) __asm__ volatile("cli; hlt");
 }
@@ -332,11 +382,12 @@ void kernel_heap_init(void) {
     kernel_heap_next = KERNEL_HEAP_START;
     free_list = NULL;
     free_region_pool_used = 0;
-    kprintf("HEAP: Kernel heap initialized at %x\n", KERNEL_HEAP_START);
+    kprintf("HEAP: Kernel heap initialized at 0x%llx\n", KERNEL_HEAP_START);
 }
 
-void paging_get_stats(uint32_t* total_virtual, uint32_t* used_virtual, uint32_t* total_physical, uint32_t* used_physical) {
-    if (total_virtual) *total_virtual = USER_SPACE_END - USER_SPACE_START;
+void paging_get_stats(uint64_t* total_virtual, uint64_t* used_virtual, 
+                      uint64_t* total_physical, uint64_t* used_physical) {
+    if (total_virtual) *total_virtual = KERNEL_HEAP_END - KERNEL_HEAP_START;
     if (used_virtual) *used_virtual = kernel_heap_next - KERNEL_HEAP_START;
     if (total_physical) *total_physical = get_total_memory();
     if (used_physical) *used_physical = get_used_memory();

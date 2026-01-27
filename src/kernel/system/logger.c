@@ -15,16 +15,15 @@ int logger_init(exfat_volume_t* volume) {
     if (!volume) return -1;
     
     log_volume = volume;
-    log_initialized = 0;  // Mark as not ready yet
+    log_initialized = 0;
     
-    // Try to open existing log file
-    if (exfat_open(volume, "/.kernel/system.log", &log_file) < 0) {
-        // File doesn't exist, create it
-        if (exfat_create(volume, "/.kernel/system.log") < 0) {
+    // CHANGE: Use flattened filename
+    if (exfat_open(volume, ".kernel.system.log", &log_file) < 0) {
+        if (exfat_create(volume, ".kernel.system.log") < 0) {
             return -1;
         }
         
-        if (exfat_open(volume, "/.kernel/system.log", &log_file) < 0) {
+        if (exfat_open(volume, ".kernel.system.log", &log_file) < 0) {
             return -1;
         }
     }

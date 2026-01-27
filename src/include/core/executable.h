@@ -1,8 +1,9 @@
+// src/include/core/executable.h - x86_64 VERSION
 #ifndef EXECUTABLE_H
 #define EXECUTABLE_H
 
 #include "types.h"
-#include "metafs.h"
+#include "../fs/metafs.h"
 #include "paging.h"
 #include "process.h"
 
@@ -11,7 +12,9 @@
  * ============================================================ */
 int executable_is_elf(const void* data, size_t size);
 int executable_validate(metafs_context_t* ctx, object_id_t id);
-uint32_t executable_get_entry_point(const void* data, size_t size);
+
+// Get entry point (now returns 64-bit address)
+uint64_t executable_get_entry_point(const void* data, size_t size);
 
 /* ============================================================
  * ELF loading
@@ -19,7 +22,7 @@ uint32_t executable_get_entry_point(const void* data, size_t size);
 int executable_load_elf(
     const void* elf_data,
     size_t size,
-    page_directory_t* page_dir
+    page_directory_t* page_dir  // PML4 in x86_64
 );
 
 /* ============================================================

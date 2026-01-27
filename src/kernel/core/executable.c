@@ -1,3 +1,4 @@
+// src/kernel/core/executable.c - x86_64 VERSION
 #include "executable.h" 
 #include "process.h"
 #include "terminal.h"
@@ -12,6 +13,7 @@
  * ============================================================ */
 #define ELF_MAGIC 0x464C457F  /* 0x7F 'E' 'L' 'F' */
 
+// 32-bit ELF header (for compatibility)
 typedef struct {
     uint32_t magic;
     uint8_t  class_;
@@ -35,6 +37,30 @@ typedef struct {
     uint16_t shstrndx;
 } __attribute__((packed)) elf32_header_t;
 
+// 64-bit ELF header (NEW)
+typedef struct {
+    uint32_t magic;
+    uint8_t  class_;        // 1 = 32-bit, 2 = 64-bit
+    uint8_t  data;
+    uint8_t  version;
+    uint8_t  osabi;
+    uint8_t  abiversion;
+    uint8_t  pad[7];
+    uint16_t type;
+    uint16_t machine;
+    uint32_t version2;
+    uint64_t entry;         // CHANGED: 64-bit entry point
+    uint64_t phoff;         // CHANGED: 64-bit program header offset
+    uint64_t shoff;         // CHANGED: 64-bit section header offset
+    uint32_t flags;
+    uint16_t ehsize;
+    uint16_t phentsize;
+    uint16_t phnum;
+    uint16_t shentsize;
+    uint16_t shnum;
+    uint16_t shstrndx;
+} __attribute__((packed)) elf64_header_t;
+
 /* ============================================================
  * ELF helpers
  * ============================================================ */
@@ -46,12 +72,25 @@ int executable_is_elf(const void* data, size_t size) {
     return hdr->magic == ELF_MAGIC;
 }
 
-uint32_t executable_get_entry_point(const void* data, size_t size) {
+// CHANGED: Return 64-bit entry point
+uint64_t executable_get_entry_point(const void* data, size_t size) {
     if (!executable_is_elf(data, size))
         return 0;
 
-    const elf32_header_t* hdr = (const elf32_header_t*)data;
-    return hdr->entry;
+    const elf32_header_t* hdr32 = (const elf32_header_t*)data;
+    
+    // Check if it's a 64-bit ELF (class_ == 2)
+    if (hdr32->class_ == 2) {
+        // 64-bit ELF
+        if (size < sizeof(elf64_header_t))
+            return 0;
+        
+        const elf64_header_t* hdr64 = (const elf64_header_t*)data;
+        return hdr64->entry;
+    } else {
+        // 32-bit ELF - extend to 64-bit
+        return (uint64_t)hdr32->entry;
+    }
 }
 
 /* ============================================================
@@ -123,15 +162,16 @@ int executable_run_object(
         return -1;
     }
 
-    uint32_t entry = executable_get_entry_point(file_data, file_size);
+    // CHANGED: Get 64-bit entry point
+    uint64_t entry = executable_get_entry_point(file_data, file_size);
     if (!entry) {
         terminal_writeln("exec: no entry point");
         kfree(file_data);
         return -1;
     }
 
-    // Cast entry point address to function pointer
-    void (*entry_func)(void) = (void (*)(void))entry;
+    // CHANGED: Cast 64-bit entry point to function pointer
+    void (*entry_func)(void) = (void (*)(void))(uintptr_t)entry;
 
     process_t* proc = process_create(
         argv[0],          /* process name */

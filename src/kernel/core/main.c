@@ -61,13 +61,13 @@ void os_main(void) {
     terminal_writeln(" Ready!");
     terminal_writeln("");
     
-    // Show system info
-    extern void paging_get_stats(uint32_t*, uint32_t*, uint32_t*, uint32_t*);
-    uint32_t total_virt, used_virt, total_phys, used_phys;
+   // Show system info
+    extern void paging_get_stats(uint64_t*, uint64_t*, uint64_t*, uint64_t*);  
+    uint64_t total_virt, used_virt, total_phys, used_phys;  // CHANGED
     paging_get_stats(&total_virt, &used_virt, &total_phys, &used_phys);
     
     terminal_setcolor(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
-    terminal_printf("Memory: %d MB free | ", (total_phys - used_phys) / 1024 / 1024);
+    terminal_printf("Memory: %d MB free | ", (uint32_t)((total_phys - used_phys) / 1024 / 1024));
     terminal_printf("Filesystem: 10 MB | ");
     
     uint32_t boot_count;

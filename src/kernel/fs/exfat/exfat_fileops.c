@@ -245,10 +245,29 @@ int exfat_mkdir(exfat_volume_t* volume, const char* path) {
 int exfat_create(exfat_volume_t* volume, const char* path) {
     kprintf("EXFAT: Creating file '%s'...\n", path);
 
-    // Parse filename (assume root directory for now)
     const char* filename = path;
     if (filename[0] == '/') {
         filename++;
+    }
+    
+    // Check if path contains subdirectory
+    const char* slash = strchr(filename, '/');
+    if (slash) {
+        // Has subdirectory - extract it
+        char dirname[64];
+        size_t dir_len = slash - filename;
+        if (dir_len >= 64) return -1;
+        
+        memcpy(dirname, filename, dir_len);
+        dirname[dir_len] = '\0';
+        
+        // Rest is the actual filename
+        filename = slash + 1;
+        
+        // TODO: Find the directory cluster instead of assuming root
+        // For now, this won't work - you need to implement subdirectory support
+        kprintf("EXFAT: Subdirectory support not yet implemented!\n");
+        return -1;
     }
 
     size_t name_len_sz = strlen(filename);

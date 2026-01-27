@@ -456,10 +456,10 @@ static void cmd_info(int argc, char** argv) {
 static void cmd_mem(int argc, char** argv) {
     (void)argc; (void)argv;
     
-    extern void paging_get_stats(uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+    extern void paging_get_stats(uint64_t*, uint64_t*, uint64_t*, uint64_t*);
     extern void heap_get_stats(heap_stats_t*);
     
-    uint32_t total_virt, used_virt, total_phys, used_phys;
+    uint64_t total_virt, used_virt, total_phys, used_phys; 
     paging_get_stats(&total_virt, &used_virt, &total_phys, &used_phys);
     
     terminal_setcolor(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
@@ -467,13 +467,13 @@ static void cmd_mem(int argc, char** argv) {
     terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     
     terminal_printf("  Physical: %d MB total, %d MB used, %d MB free\n",
-                    total_phys / 1024 / 1024,
-                    used_phys / 1024 / 1024,
-                    (total_phys - used_phys) / 1024 / 1024);
+                    (uint32_t)(total_phys / 1024 / 1024),
+                    (uint32_t)(used_phys / 1024 / 1024),
+                    (uint32_t)((total_phys - used_phys) / 1024 / 1024));
     
     terminal_printf("  Virtual:  %d MB range, %d KB used\n",
-                    total_virt / 1024 / 1024,
-                    used_virt / 1024);
+                    (uint32_t)(total_virt / 1024 / 1024),
+                    (uint32_t)(used_virt / 1024));
     
     heap_stats_t stats;
     heap_get_stats(&stats);

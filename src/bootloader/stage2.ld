@@ -1,40 +1,31 @@
 /* src/bootloader/stage2.ld */
-OUTPUT_FORMAT(elf32-i386)
-ENTRY(protected_entry)
+OUTPUT_FORMAT(elf64-x86-64)
+ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x00100000;
+  . = 0x00100000;
 
-    .text : ALIGN(4K)
-    {
-        *(.text.entry)
-        *(.text)
-        *(.text.*)
-        *(.rodata)
-        *(.rodata.*)
-    }
+  __kernel_start = .;
 
+  .text : ALIGN(16) {
+    *(.text*)
+  }
 
-    .data : ALIGN(4K)
-    {
-        *(.data)
-        *(.data.*)
-    }
+  .rodata : ALIGN(16) {
+    *(.rodata*)
+  }
 
-    .bss : ALIGN(4K)
-    {
-        __bss_start = .;
-        *(COMMON)
-        *(.bss)
-        *(.bss.*)
-        __bss_end = .;
-    }
+  .data : ALIGN(16) {
+    *(.data*)
+  }
 
-    /DISCARD/ :
-    {
-        *(.comment)
-        *(.note*)
-        *(.eh_frame)
-    }
+  __bss_start = .;
+  .bss : ALIGN(16) {
+    *(COMMON)
+    *(.bss*)
+  }
+  __bss_end = .;
+
+  __kernel_end = .;
 }

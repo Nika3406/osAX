@@ -6,7 +6,7 @@
 #include "metafs.h"
 #include "heap.h"
 
-#define SYSTEM_STATE_FILE "/.kernel/system.state"
+#define SYSTEM_STATE_FILE ".kernel.system.state"
 #define SYSTEM_MAGIC 0x4F534158  // "OSAX"
 
 typedef struct {
@@ -87,12 +87,6 @@ void system_first_boot(exfat_volume_t* volume) {
     uint32_t sectors = (10 * 1024 * 1024) / 512;
     exfat_format(sectors);
     exfat_mount(volume);
-    
-    // Create directories
-    terminal_write("Creating storage directories...");
-    exfat_mkdir(volume, "/.kernel");
-    exfat_mkdir(volume, "/data");
-    terminal_writeln(" done");
     
     // Initialize MetaFS
     terminal_write("Initializing metadata system...");

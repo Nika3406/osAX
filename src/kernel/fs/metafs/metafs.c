@@ -100,11 +100,21 @@ int metafs_import_system_files(metafs_context_t* ctx) {
     object_id_t objects_db = create_system_object(ctx, 
         "objects", "db", SYSTEM_VIEW_KERNEL, OBJ_TYPE_DATA);
     
+    // Write empty placeholder data so the file exists
+    if (!metafs_object_id_equal(objects_db, OBJECT_ID_NULL)) {
+        const char* placeholder = "";
+        metafs_object_write_data(ctx, objects_db, placeholder, 0);
+    }
+    
     // Import system.state
     object_id_t system_state = create_system_object(ctx,
         "system", "state", SYSTEM_VIEW_KERNEL, OBJ_TYPE_DATA);
     
-    // These objects now appear when you "ls kernel" or "view kernel; ls"
+    // Write empty placeholder data so the file exists
+    if (!metafs_object_id_equal(system_state, OBJECT_ID_NULL)) {
+        const char* placeholder = "";
+        metafs_object_write_data(ctx, system_state, placeholder, 0);
+    }
     
     kprintf("METAFS: Imported 2 system files as objects\n");
     return 0;
@@ -290,14 +300,14 @@ int metafs_init(metafs_context_t* ctx, exfat_volume_t* volume) {
 int metafs_save_index(metafs_context_t* ctx) {
     kprintf("METAFS: Saving index to disk...\n");
 
-    // Create metadata file
-    if (exfat_create(ctx->volume, "/.kernel/objects.db") < 0) {
+    // CHANGE: Use flattened filename
+    if (exfat_create(ctx->volume, ".kernel.objects.db") < 0) {
         kprintf("METAFS: Failed to create objects.db\n");
         return -1;
     }
 
     exfat_file_t file;
-    if (exfat_open(ctx->volume, "/.kernel/objects.db", &file) < 0) {
+    if (exfat_open(ctx->volume, ".kernel.objects.db", &file) < 0) {
         kprintf("METAFS: Failed to open objects.db\n");
         return -1;
     }
@@ -327,7 +337,8 @@ int metafs_load_index(metafs_context_t* ctx) {
     kprintf("METAFS: Loading index from disk...\n");
 
     exfat_file_t file;
-    if (exfat_open(ctx->volume, "/.kernel/objects.db", &file) < 0) {
+    // CHANGE: Use flattened filename
+    if (exfat_open(ctx->volume, ".kernel.objects.db", &file) < 0) {
         kprintf("METAFS: No existing index found\n");
         return -1;
     }
@@ -400,11 +411,14 @@ static void object_id_to_filename(object_id_t id, char* filename, const char* pr
 int metafs_object_write_data(metafs_context_t* ctx, object_id_t id,
                               const void* data, size_t size) {
     char filename[64];
-    object_id_to_filename(id, filename, "/data/");
+    // CHANGE: Use "data." prefix instead of "/data/"
+    object_id_to_filename(id, filename, "data.");
 
-    kprintf("METAFS: Writing object data to ");
-    kprintf(filename);
-    kprintf(" (");
+    kprintf("METAFS: Writing object data to %s (%d bytes)\n", filename, size);
+
+    if (exfat_create(ctx->volume, filename) < 0) {
+        return -1;
+    }
     extern void serial_put_dec(uint32_t);
     serial_put_dec(size);
     kprintf(" bytes)\n");
@@ -439,9 +453,10 @@ int metafs_object_read_data(metafs_context_t* ctx, object_id_t id,
     }
 
     char filename[64];
-    object_id_to_filename(id, filename, "/data/");
+    // CHANGE: Use "data." prefix instead of "/data/"
+    object_id_to_filename(id, filename, "data.");
 
-    kprintf("METAFS: Reading object data from ");
+    kprintf("METAFS: Reading object data from %s\n", filename);
     kprintf(filename);
     kprintf("\n");
 
@@ -469,26 +484,25 @@ int metafs_object_read_data(metafs_context_t* ctx, object_id_t id,
 // Create view link - FIXED VERSION
 int metafs_view_link_persistent(metafs_context_t* ctx, const char* view_name,
                                  const char* name, object_id_t id) {
-    // Build path manually
+    // Build flattened path manually
     char path[256];
     char* p = path;
 
-    // "/views/"
-    *p++ = '/';
+    // "views."
     *p++ = 'v'; *p++ = 'i'; *p++ = 'e'; *p++ = 'w'; *p++ = 's';
-    *p++ = '/';
+    *p++ = '.';
 
     // view_name
     const char* s = view_name;
     while (*s) *p++ = *s++;
-    *p++ = '/';
+    *p++ = '.';
 
     // name
     s = name;
     while (*s) *p++ = *s++;
     *p = '\0';
 
-    kprintf("METAFS: Creating view link ");
+    kprintf("METAFS: Creating view link %s\n", path);
     kprintf(path);
     kprintf("\n");
 
@@ -537,9 +551,7 @@ int metafs_view_link_persistent(metafs_context_t* ctx, const char* view_name,
 object_id_t metafs_path_resolve(metafs_context_t* ctx, const char* path) {
     if (!ctx || !path) return OBJECT_ID_NULL;
 
-    kprintf("METAFS: Resolving path '");
-    kprintf(path);
-    kprintf("'...\n");
+    kprintf("METAFS: Resolving path '%s'...\n", path);
 
     // Skip leading /
     if (path[0] == '/') path++;
@@ -565,26 +577,25 @@ object_id_t metafs_path_resolve(metafs_context_t* ctx, const char* path) {
     // Extract object name
     const char* object_name = slash + 1;
 
-    // Build link path manually
+    // Build flattened link path
     char link_path[256];
     char* p = link_path;
 
-    // "/views/"
-    *p++ = '/';
+    // "views."
     *p++ = 'v'; *p++ = 'i'; *p++ = 'e'; *p++ = 'w'; *p++ = 's';
-    *p++ = '/';
+    *p++ = '.';
 
     // view_name
     const char* s = view_name;
     while (*s) *p++ = *s++;
-    *p++ = '/';
+    *p++ = '.';
 
     // object_name
     s = object_name;
     while (*s) *p++ = *s++;
     *p = '\0';
 
-    kprintf("METAFS: Opening link file ");
+    kprintf("METAFS: Opening link file %s\n", link_path);
     kprintf(link_path);
     kprintf("\n");
 

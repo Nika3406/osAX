@@ -1,270 +1,304 @@
-# ===== Variables =====
-AS = nasm
-CC = i386-elf-gcc
-LD = i386-elf-ld
-OBJCOPY = i386-elf-objcopy
-QEMU = qemu-system-i386
+# =========================
+# osAX Makefile (x86_64)
+# build/ contains all artifacts
+# stage1.5 sectors auto-computed (two-pass)
+# =========================
 
-# Compiler flags - Add all include subdirectories
-CFLAGS = -m32 -ffreestanding -nostdinc -fno-builtin -O2 -Wall -Wextra \
-         -Isrc/include \
-         -Isrc/include/core \
-         -Isrc/include/memory \
-         -Isrc/include/fs \
-         -Isrc/include/drivers \
-         -Isrc/include/lib \
-         -Isrc/include/system
+AS      := nasm
+CC      := x86_64-elf-gcc
+LD      := x86_64-elf-ld
+OBJCOPY := x86_64-elf-objcopy
+QEMU    := qemu-system-x86_64
 
-LDFLAGS = -m elf_i386 -T src/bootloader/stage2.ld -nostdlib
+BUILD   := build
 
-# Bootloader assembly sources
-BOOTLOADER_SRC = src/bootloader/boot.asm
-STAGE15_SRC = src/bootloader/stage15.asm
-ENTRY_ASM = src/bootloader/entry.asm
-PAGING_ASM = src/bootloader/paging_asm.asm
-IDT_ASM = src/bootloader/idt_asm.asm
-IRQ_ASM = src/bootloader/irq_asm.asm
+# -------------------------
+# Includes
+# -------------------------
+INCLUDES := -Isrc/include -Isrc/include/core -Isrc/include/memory \
+            -Isrc/include/fs -Isrc/include/drivers -Isrc/include/lib \
+            -Isrc/include/system
 
-# Stage1.5 size (in sectors). Must match -DSTAGE15_SECTORS passed to boot.asm and stage15.asm
-STAGE15_SECTORS = 8
+# -------------------------
+# Kernel C flags
+# -------------------------
+CFLAGS := -m64 -mcmodel=kernel -mno-red-zone \
+          -mno-mmx -mno-sse -mno-sse2 \
+          -ffreestanding -nostdinc -fno-builtin -O2 \
+          -Wall -Wextra $(INCLUDES)
 
-# C source files (organized by category)
-CORE_SOURCES = \
+# -------------------------
+# Sources
+# -------------------------
+BOOT_ASM    := src/bootloader/boot.asm
+STAGE15_ASM := src/bootloader/stage15.asm
+
+ENTRY_ASM   := src/bootloader/entry.asm
+PAGING_ASM  := src/bootloader/paging_asm.asm
+IDT_ASM     := src/bootloader/idt_asm.asm
+IRQ_ASM     := src/bootloader/irq_asm.asm
+
+STAGE2_LD   := src/bootloader/stage2.ld
+
+CORE_SOURCES := \
     src/kernel/core/stage2.c \
     src/kernel/core/main.c \
     src/kernel/core/idt.c \
     src/kernel/core/process.c \
     src/kernel/core/executable.c
 
-MEMORY_SOURCES = \
+MEMORY_SOURCES := \
     src/kernel/memory/physical_mm.c \
     src/kernel/memory/paging.c \
     src/kernel/memory/heap.c \
     src/kernel/memory/memory.c \
     src/kernel/memory/dma.c
 
-FS_SOURCES = \
+FS_SOURCES := \
     src/kernel/fs/exfat/exfat.c \
     src/kernel/fs/exfat/exfat_fileops.c \
     src/kernel/fs/metafs/metafs.c \
     src/kernel/fs/metafs/metafs_wrappers.c
 
-DRIVER_SOURCES = \
+DRIVER_SOURCES := \
     src/kernel/drivers/keyboard.c \
     src/kernel/drivers/serial.c \
     src/kernel/drivers/terminal.c
 
-LIB_SOURCES = \
+LIB_SOURCES := \
     src/kernel/lib/string.c \
     src/kernel/lib/kstring_util.c
 
-SYSTEM_SOURCES = \
+SYSTEM_SOURCES := \
     src/kernel/system/system.c \
     src/kernel/system/logger.c \
     src/kernel/system/shell.c
 
-LEGACY_SOURCES = \
+KERNEL_SOURCES := \
     src/kernel/kernel.c
 
-# Combine all sources
-C_SOURCES = $(CORE_SOURCES) $(MEMORY_SOURCES) $(FS_SOURCES) \
-            $(DRIVER_SOURCES) $(LIB_SOURCES) $(SYSTEM_SOURCES) \
-            $(LEGACY_SOURCES)
+ALL_SOURCES := \
+    $(CORE_SOURCES) \
+    $(MEMORY_SOURCES) \
+    $(FS_SOURCES) \
+    $(DRIVER_SOURCES) \
+    $(LIB_SOURCES) \
+    $(SYSTEM_SOURCES) \
+    $(KERNEL_SOURCES)
 
-# Object files
-ASM_OBJS = \
-    build/entry.o \
-    build/paging_asm.o \
-    build/idt_asm.o \
-    build/irq_asm.o
+# -------------------------
+# Outputs
+# -------------------------
+BOOT_BIN      := $(BUILD)/boot.bin
+STAGE15_RAW   := $(BUILD)/stage15.raw
+STAGE15_BIN   := $(BUILD)/stage15.bin
+STAGE15_SECF  := $(BUILD)/stage15.sectors
 
-# Flatten C object names (all go to build/)
-C_OBJS = $(foreach src,$(C_SOURCES),build/$(notdir $(basename $(src))).o)
+ENTRY_OBJ     := $(BUILD)/entry.o
+PAGING_OBJ    := $(BUILD)/paging_asm.o
+IDT_OBJ       := $(BUILD)/idt_asm.o
+IRQ_OBJ       := $(BUILD)/irq_asm.o
 
-# Final outputs
-BOOTLOADER_BIN = build/bootloader.bin
-STAGE15_BIN = build/stage15.bin
-STAGE2_ELF = build/stage2.elf
-STAGE2_BIN = build/stage2.bin
-DISK_IMG = build/disk.img
+STAGE2_ELF    := $(BUILD)/stage2.elf
+STAGE2_BIN    := $(BUILD)/stage2.bin
 
-# ===== Targets =====
-.PHONY: all run debug serial clean distclean help
+DISK_IMG      := $(BUILD)/os.img
+
+# C object files: src/foo/bar.c -> build/foo/bar.o (no "src/" in the build path)
+C_OBJECTS := $(patsubst src/%.c,$(BUILD)/%.o,$(ALL_SOURCES))
+
+# -------------------------
+# Default STAGE2 sectors (will be overridden when file exists)
+# -------------------------
+DEFAULT_STAGE2_SECTORS := 153
+
+# -------------------------
+# Targets
+# -------------------------
+.PHONY: all clean run run-simple run-debug run-serial verify
 
 all: $(DISK_IMG)
 
-build:
-	@mkdir -p build
+# Ensure build dir exists
+$(BUILD):
+	@mkdir -p $(BUILD)
 
-# --- Assembly files ---
-build/%.o: src/bootloader/%.asm build
-	@echo "Assembling $<..."
-	$(AS) -f elf32 $< -o $@
-
-# --- C files from various directories (match by basename) ---
-build/stage2.o: src/kernel/core/stage2.c build
-	@echo "Compiling $<..."
+# -------------------------
+# Compile C: create parent dirs automatically
+# -------------------------
+$(BUILD)/%.o: src/%.c | $(BUILD)
+	@mkdir -p $(dir $@)
+	@echo "Compiling $< (64-bit)..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/main.o: src/kernel/core/main.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
+# -------------------------
+# Assemble kernel-side asm objects (elf64)
+# -------------------------
+$(ENTRY_OBJ): $(ENTRY_ASM) | $(BUILD)
+	@echo "Assembling $(ENTRY_ASM) (64-bit)..."
+	$(AS) -f elf64 $< -o $@
 
-build/idt.o: src/kernel/core/idt.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
+$(PAGING_OBJ): $(PAGING_ASM) | $(BUILD)
+	@echo "Assembling $(PAGING_ASM) (64-bit)..."
+	$(AS) -f elf64 $< -o $@
 
-build/process.o: src/kernel/core/process.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
+$(IDT_OBJ): $(IDT_ASM) | $(BUILD)
+	@echo "Assembling $(IDT_ASM) (64-bit)..."
+	$(AS) -f elf64 $< -o $@
 
-build/executable.o: src/kernel/core/executable.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
+$(IRQ_OBJ): $(IRQ_ASM) | $(BUILD)
+	@echo "Assembling $(IRQ_ASM) (64-bit)..."
+	$(AS) -f elf64 $< -o $@
 
-build/physical_mm.o: src/kernel/memory/physical_mm.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
+# -------------------------
+# Link kernel
+# -------------------------
+$(STAGE2_ELF): $(ENTRY_OBJ) $(PAGING_OBJ) $(IDT_OBJ) $(IRQ_OBJ) $(C_OBJECTS)
+	@echo "Linking 64-bit kernel..."
+	$(LD) -m elf_x86_64 -T $(STAGE2_LD) -nostdlib \
+		$(ENTRY_OBJ) $(PAGING_OBJ) $(IDT_OBJ) $(IRQ_OBJ) $(C_OBJECTS) \
+		-o $@
 
-build/paging.o: src/kernel/memory/paging.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/heap.o: src/kernel/memory/heap.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/memory.o: src/kernel/memory/memory.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/dma.o: src/kernel/memory/dma.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/exfat.o: src/kernel/fs/exfat/exfat.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/exfat_fileops.o: src/kernel/fs/exfat/exfat_fileops.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/metafs.o: src/kernel/fs/metafs/metafs.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/metafs_wrappers.o: src/kernel/fs/metafs/metafs_wrappers.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/keyboard.o: src/kernel/drivers/keyboard.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/serial.o: src/kernel/drivers/serial.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/terminal.o: src/kernel/drivers/terminal.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/string.o: src/kernel/lib/string.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/kstring_util.o: src/kernel/lib/kstring_util.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/system.o: src/kernel/system/system.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/logger.o: src/kernel/system/logger.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/shell.o: src/kernel/system/shell.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/kernel.o: src/kernel/kernel.c build
-	@echo "Compiling $<..."
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# --- Link Stage2 ---
-$(STAGE2_ELF): $(ASM_OBJS) $(C_OBJS)
-	@echo "Linking stage2..."
-	$(LD) $(LDFLAGS) $^ -o $@
-
+# -------------------------
+# Kernel binary
+# -------------------------
 $(STAGE2_BIN): $(STAGE2_ELF)
-	@echo "Creating stage2 binary..."
+	@echo "Creating 64-bit kernel binary..."
 	$(OBJCOPY) -O binary $< $@
-	@echo "Stage2 size: $$(wc -c < $@) bytes"
+	@echo "Kernel size: $$(wc -c < $@) bytes"
 
-# --- Stage1.5 (MUST come AFTER stage2.bin so we know STAGE2_SECTORS) ---
-$(STAGE15_BIN): $(STAGE15_SRC) $(STAGE2_BIN) build
-	$(eval STAGE2_SIZE := $(shell stat -c%s $(STAGE2_BIN) 2>/dev/null || echo 512))
-	$(eval STAGE2_SECTORS := $(shell echo $$(( ($(STAGE2_SIZE) + 511) / 512 ))))
-	@echo "Building stage1.5: $(STAGE15_SECTORS) sectors, stage2 = $(STAGE2_SECTORS) sectors"
-	$(AS) -f bin -DSTAGE15_SECTORS=$(STAGE15_SECTORS) -DSTAGE2_SECTORS=$(STAGE2_SECTORS) $< -o $@
-	@echo "Stage1.5 size: $$(wc -c < $@) bytes (expected $$(( $(STAGE15_SECTORS) * 512 )))"
+# -------------------------
+# Stage1.5 (two-pass)
+# Pass 1: build raw WITHOUT padding
+# -------------------------
+$(STAGE15_RAW): $(STAGE15_ASM) $(STAGE2_BIN) | $(BUILD)
+	@if [ -f $(STAGE2_BIN) ]; then \
+		S2SEC=$$(( ($$(stat -c%s $(STAGE2_BIN)) + 511) / 512 )); \
+	else \
+		S2SEC=$(DEFAULT_STAGE2_SECTORS); \
+	fi; \
+	echo "Assembling stage1.5 raw (no padding), stage2=$$S2SEC sectors"; \
+	$(AS) -f bin -DNO_STAGE15_PAD=1 -DSTAGE2_SECTORS=$$S2SEC $(STAGE15_ASM) -o $(STAGE15_RAW); \
+	echo "Stage1.5 raw size: $$(wc -c < $(STAGE15_RAW)) bytes"
 
-# --- Bootloader stage1 (MUST come AFTER stage2.bin so we know STAGE2_SECTORS) ---
-$(BOOTLOADER_BIN): $(BOOTLOADER_SRC) $(STAGE2_BIN) $(STAGE15_BIN) build
-	@echo "DEBUG: stage2.bin exists: $$(test -f $(STAGE2_BIN) && echo YES || echo NO)"
-	@echo "DEBUG: stage2.bin size: $$(test -f $(STAGE2_BIN) && stat -c%s $(STAGE2_BIN) || echo 0)"
-	$(eval STAGE2_SIZE := $(shell stat -c%s $(STAGE2_BIN) 2>/dev/null || echo 512))
-	$(eval STAGE2_SECTORS := $(shell echo $$(( ($(STAGE2_SIZE) + 511) / 512 ))))
-	@echo "Building bootloader (stage1): stage15=$(STAGE15_SECTORS) sectors, stage2=$(STAGE2_SECTORS) sectors"
-	$(AS) -f bin -DSTAGE15_SECTORS=$(STAGE15_SECTORS) -DSTAGE2_SECTORS=$(STAGE2_SECTORS) $< -o $@
+# Compute stage1.5 sectors from raw
+$(STAGE15_SECF): $(STAGE15_RAW) | $(BUILD)
+	@SZ=$$(stat -c%s $(STAGE15_RAW)); \
+	SECT=$$(( ($$SZ + 511) / 512 )); \
+	echo $$SECT > $(STAGE15_SECF); \
+	echo "Stage1.5 sectors (auto): $$SECT"
 
-# --- Disk image ---
-$(DISK_IMG): $(BOOTLOADER_BIN) $(STAGE15_BIN) $(STAGE2_BIN)
-	$(eval STAGE2_SIZE := $(shell stat -c%s $(STAGE2_BIN) 2>/dev/null || echo 512))
-	$(eval STAGE2_SECTORS := $(shell echo $$(( ($(STAGE2_SIZE) + 511) / 512 ))))
-	$(eval DISK_SECTORS := $(shell echo $$(( 1 + $(STAGE15_SECTORS) + $(STAGE2_SECTORS) + 200 ))))
-	@echo "Creating disk image: $(DISK_SECTORS) sectors total"
-	dd if=/dev/zero of=$(DISK_IMG) bs=512 count=$(DISK_SECTORS) 2>/dev/null
-	dd if=$(BOOTLOADER_BIN) of=$(DISK_IMG) conv=notrunc 2>/dev/null
-	dd if=$(STAGE15_BIN)   of=$(DISK_IMG) bs=512 seek=1 conv=notrunc 2>/dev/null
-	dd if=$(STAGE2_BIN)    of=$(DISK_IMG) bs=512 seek=$$((1 + $(STAGE15_SECTORS))) conv=notrunc 2>/dev/null
-	@echo "Build complete! stage15=$(STAGE15_SECTORS) sectors, stage2=$(STAGE2_SECTORS) sectors"
+# Pass 2: build final WITH exact padding to STAGE15_SECTORS
+$(STAGE15_BIN): $(STAGE15_ASM) $(STAGE2_BIN) $(STAGE15_SECF) | $(BUILD)
+	@S15SEC=$$(cat $(STAGE15_SECF)); \
+	if [ -f $(STAGE2_BIN) ]; then \
+		S2SEC=$$(( ($$(stat -c%s $(STAGE2_BIN)) + 511) / 512 )); \
+	else \
+		S2SEC=$(DEFAULT_STAGE2_SECTORS); \
+	fi; \
+	echo "Building stage1.5: $$S15SEC sectors, stage2=$$S2SEC sectors"; \
+	$(AS) -f bin -DSTAGE15_SECTORS=$$S15SEC -DSTAGE2_SECTORS=$$S2SEC $(STAGE15_ASM) -o $(STAGE15_BIN); \
+	echo "Stage1.5 final size: $$(wc -c < $(STAGE15_BIN)) bytes"
 
-# --- Run in QEMU ---
+# -------------------------
+# Stage1 boot sector (MBR) - WITH VERIFICATION
+# -------------------------
+$(BOOT_BIN): $(BOOT_ASM) $(STAGE2_BIN) $(STAGE15_BIN) $(STAGE15_SECF) | $(BUILD)
+	@S15SEC=$$(cat $(STAGE15_SECF)); \
+	if [ -f $(STAGE2_BIN) ]; then \
+		S2SEC=$$(( ($$(stat -c%s $(STAGE2_BIN)) + 511) / 512 )); \
+	else \
+		S2SEC=$(DEFAULT_STAGE2_SECTORS); \
+	fi; \
+	echo "Building boot sector: stage15=$$S15SEC sectors, stage2=$$S2SEC sectors"; \
+	$(AS) -f bin -DSTAGE15_SECTORS=$$S15SEC -DSTAGE2_SECTORS=$$S2SEC $(BOOT_ASM) -o $(BOOT_BIN); \
+	BOOT_SIZE=$$(stat -c%s $(BOOT_BIN) 2>/dev/null || stat -f%z $(BOOT_BIN)); \
+	if [ "$$BOOT_SIZE" != "512" ]; then \
+		echo "ERROR: Boot sector is $$BOOT_SIZE bytes, must be 512!"; \
+		exit 1; \
+	fi; \
+	BOOT_SIG=$$(od -An -tx2 -j510 -N2 $(BOOT_BIN) | tr -d ' '); \
+	if [ "$$BOOT_SIG" != "aa55" ]; then \
+		echo "ERROR: Boot signature is 0x$$BOOT_SIG, must be 0xaa55!"; \
+		exit 1; \
+	fi; \
+	echo "Boot sector verified: 512 bytes, signature 0xAA55"
+
+# -------------------------
+# Disk image layout:
+#   LBA 0: boot.bin
+#   LBA 1.. : stage15.bin (STAGE15_SECTORS)
+#   Next    : stage2.bin  (STAGE2_SECTORS)
+#   + some slack
+# -------------------------
+$(DISK_IMG): $(BOOT_BIN) $(STAGE15_BIN) $(STAGE2_BIN) $(STAGE15_SECF) | $(BUILD)
+	@S15SEC=$$(cat $(STAGE15_SECF)); \
+	if [ -f $(STAGE2_BIN) ]; then \
+		S2SEC=$$(( ($$(stat -c%s $(STAGE2_BIN)) + 511) / 512 )); \
+	else \
+		S2SEC=$(DEFAULT_STAGE2_SECTORS); \
+	fi; \
+	TOTAL=$$(( 1 + $$S15SEC + $$S2SEC + 200 )); \
+	echo "Creating disk image: $$TOTAL sectors total"; \
+	dd if=/dev/zero of=$(DISK_IMG) bs=512 count=$$TOTAL 2>/dev/null; \
+	dd if=$(BOOT_BIN)   of=$(DISK_IMG) conv=notrunc 2>/dev/null; \
+	dd if=$(STAGE15_BIN) of=$(DISK_IMG) bs=512 seek=1 conv=notrunc 2>/dev/null; \
+	dd if=$(STAGE2_BIN)  of=$(DISK_IMG) bs=512 seek=$$((1 + $$S15SEC)) conv=notrunc 2>/dev/null; \
+	echo "Build complete!"
+
+# -------------------------
+# Run targets
+# -------------------------
 run: $(DISK_IMG)
+	@echo "Running in QEMU..."
 	$(QEMU) -m 256 \
-	        -drive file=$(DISK_IMG),format=raw,if=ide \
-	        -serial stdio \
+	        -drive file=$(DISK_IMG),format=raw,if=ide,index=0 -boot c \
+	        -serial mon:stdio \
 	        -no-reboot -no-shutdown \
-	        -d int,cpu_reset,guest_errors -D qemu.log
+	        -d int,cpu_reset,guest_errors -D $(BUILD)/qemu.log
 
-debug: $(DISK_IMG)
-	$(QEMU) -m 256 \
-	        -drive file=$(DISK_IMG),format=raw,if=ide \
-	        -serial stdio \
-	        -no-reboot -no-shutdown \
-	        -d int,cpu_reset,guest_errors -D qemu.log
+run-simple: $(DISK_IMG)
+	@echo "Running in QEMU (simple mode)..."
+	$(QEMU) -hda $(DISK_IMG)
 
-serial: $(DISK_IMG)
-	$(QEMU) -hda $(DISK_IMG) -serial stdio
+run-debug: $(DISK_IMG)
+	@echo "Running in QEMU with debug output..."
+	$(QEMU) -drive file=$(DISK_IMG),format=raw,if=ide -boot c -d int,cpu_reset -no-reboot
 
-# --- Clean ---
+run-serial: $(DISK_IMG)
+	@echo "Running in QEMU with serial console..."
+	$(QEMU) -drive file=$(DISK_IMG),format=raw,if=ide -boot c -serial stdio -no-reboot
+
+# -------------------------
+# Verify disk image
+# -------------------------
+verify: $(DISK_IMG)
+	@echo "=== Verifying Boot Image ==="
+	@echo
+	@echo "1. Boot sector (boot.bin):"
+	@BOOT_SIZE=$$(stat -c%s $(BOOT_BIN) 2>/dev/null || stat -f%z $(BOOT_BIN)); \
+	echo "   Size: $$BOOT_SIZE bytes"; \
+	if [ "$$BOOT_SIZE" = "512" ]; then echo "   Correct size"; else echo "   Wrong size!"; fi
+	@BOOT_SIG=$$(od -An -tx2 -j510 -N2 $(BOOT_BIN) | tr -d ' '); \
+	echo "   Signature: 0x$$BOOT_SIG"; \
+	if [ "$$BOOT_SIG" = "aa55" ]; then echo "   Valid signature"; else echo "  Invalid signature!"; fi
+	@echo
+	@echo "2. Disk image (os.img):"
+	@IMG_SIZE=$$(stat -c%s $(DISK_IMG) 2>/dev/null || stat -f%z $(DISK_IMG)); \
+	echo "   Size: $$IMG_SIZE bytes"
+	@IMG_SIG=$$(od -An -tx2 -j510 -N2 $(DISK_IMG) | tr -d ' '); \
+	echo "   Signature: 0x$$IMG_SIG"; \
+	if [ "$$IMG_SIG" = "aa55" ]; then echo "   Valid signature"; else echo "   Invalid signature!"; fi
+	@echo
+	@echo "3. First 32 bytes of disk:"
+	@od -Ax -tx1z -N32 $(DISK_IMG)
+	@echo
+
+# -------------------------
+# Clean
+# -------------------------
 clean:
 	@echo "Cleaning build files..."
-	rm -f build/*.bin build/*.o build/*.elf build/*.img
+	rm -f $(BUILD)/*.bin $(BUILD)/*.o $(BUILD)/*.elf $(BUILD)/*.img $(BUILD)/*.raw $(BUILD)/*.sectors
+	rm -rf $(BUILD)/kernel $(BUILD)/bootloader $(BUILD)/src $(BUILD)/include
 	@echo "Clean complete!"
-
-distclean: clean
-	rm -rf build
-
-# --- Help ---
-help:
-	@echo "Available targets:"
-	@echo "  all       - Build everything (default)"
-	@echo "  run       - Build and run in QEMU"
-	@echo "  debug     - Build and run with debugging"
-	@echo "  clean     - Remove build files"
-	@echo "  distclean - Remove build directory"

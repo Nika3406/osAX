@@ -1,4 +1,4 @@
-// src/kernel/process.c
+// src/kernel/core/process.c - x86_64 VERSION
 #include "process.h"
 #include "heap.h"
 #include "kstring.h"
@@ -59,8 +59,8 @@ process_t* process_create(const char* name, void (*entry_point)(void), uint32_t 
         proc->page_dir = get_kernel_page_dir();
     }
 
-    // Allocate kernel stack (8KB)
-    proc->kernel_stack = (uint32_t)kmalloc_virtual(8192);
+    // Allocate kernel stack (8KB) - CHANGED to uint64_t
+    proc->kernel_stack = (uint64_t)kmalloc_virtual(8192);
     if (!proc->kernel_stack) {
         kprintf("PROCESS: Failed to allocate kernel stack\n");
         if (!is_kernel) kfree_virtual(proc->page_dir, sizeof(page_directory_t));
@@ -69,9 +69,9 @@ process_t* process_create(const char* name, void (*entry_point)(void), uint32_t 
     }
     proc->kernel_stack += 8192;  // Stack grows down
 
-    // Allocate user stack (8KB) if user mode
+    // Allocate user stack (8KB) if user mode - CHANGED to uint64_t
     if (!is_kernel) {
-        proc->user_stack = (uint32_t)kmalloc_virtual(8192);
+        proc->user_stack = (uint64_t)kmalloc_virtual(8192);
         if (!proc->user_stack) {
             kprintf("PROCESS: Failed to allocate user stack\n");
             kfree_virtual((void*)(proc->kernel_stack - 8192), 8192);
@@ -82,19 +82,19 @@ process_t* process_create(const char* name, void (*entry_point)(void), uint32_t 
         proc->user_stack += 8192;  // Stack grows down
     }
 
-    // Initialize context
+    // Initialize context - CHANGED for 64-bit registers
     memset(&proc->context, 0, sizeof(cpu_context_t));
-    proc->context.eip = (uint32_t)entry_point;
-    proc->context.esp = is_kernel ? proc->kernel_stack : proc->user_stack;
-    proc->context.ebp = proc->context.esp;
-    proc->context.eflags = 0x202;  // IF enabled
-    proc->context.cr3 = (uint32_t)proc->page_dir;
+    proc->context.rip = (uint64_t)entry_point;      // CHANGED: eip -> rip
+    proc->context.rsp = is_kernel ? proc->kernel_stack : proc->user_stack;  // CHANGED: esp -> rsp
+    proc->context.rbp = proc->context.rsp;          // CHANGED: ebp -> rbp
+    proc->context.rflags = 0x202;                   // CHANGED: eflags -> rflags (IF enabled)
+    proc->context.cr3 = (uint64_t)proc->page_dir;   // CHANGED: 64-bit
 
     // Add to process list
     proc->next = process_list;
     process_list = proc;
 
-    kprintf("PROCESS: Created process PID=%d '%s' at %x\n", proc->pid, proc->name, proc);
+    kprintf("PROCESS: Created process PID=%d '%s' at %p\n", proc->pid, proc->name, proc);
 
     return proc;
 }
@@ -151,7 +151,7 @@ void process_switch(process_t* next) {
     switch_page_directory(next->page_dir);
 
     // Context switch (would be in assembly)
-    // For now, just update EIP and continue
+    // For now, just update RIP and continue
     // In real implementation, save/restore all registers
 }
 

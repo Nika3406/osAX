@@ -1,119 +1,108 @@
 ; src/bootloader/idt_asm.asm
-[BITS 32]
+BITS 64
+SECTION .text
 
-extern isr_handler
+EXTERN isr_handler
 
-; Macro for ISRs without error codes
-%macro ISR_NOERRCODE 1
-global isr%1
-isr%1:
-    cli
-    push dword 0        ; Dummy error code
-    push dword %1       ; Interrupt number
-    jmp isr_common_stub
+%macro PUSH_REGS 0
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbp
+    push rdx
+    push rcx
+    push rbx
+    push rax
 %endmacro
 
-; Macro for ISRs with error codes (CPU pushes error code automatically)
-%macro ISR_ERRCODE 1
-global isr%1
-isr%1:
-    cli
-    push dword %1       ; Interrupt number (error code already pushed by CPU)
-    jmp isr_common_stub
+%macro POP_REGS 0
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rbp
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
 %endmacro
 
-; Define all 32 CPU exception ISRs
-ISR_NOERRCODE 0     ; Divide by zero
-ISR_NOERRCODE 1     ; Debug
-ISR_NOERRCODE 2     ; NMI
-ISR_NOERRCODE 3     ; Breakpoint
-ISR_NOERRCODE 4     ; Overflow
-ISR_NOERRCODE 5     ; Bound range exceeded
-ISR_NOERRCODE 6     ; Invalid opcode
-ISR_NOERRCODE 7     ; Device not available
-ISR_ERRCODE   8     ; Double fault (has error code)
-ISR_NOERRCODE 9     ; Coprocessor segment overrun
-ISR_ERRCODE   10    ; Invalid TSS (has error code)
-ISR_ERRCODE   11    ; Segment not present (has error code)
-ISR_ERRCODE   12    ; Stack-segment fault (has error code)
-ISR_ERRCODE   13    ; General protection fault (has error code)
-ISR_ERRCODE   14    ; Page fault (has error code)
-ISR_NOERRCODE 15    ; Reserved
-ISR_NOERRCODE 16    ; x87 FPU error
-ISR_ERRCODE   17    ; Alignment check (has error code)
-ISR_NOERRCODE 18    ; Machine check
-ISR_NOERRCODE 19    ; SIMD floating-point exception
-ISR_NOERRCODE 20    ; Virtualization exception
-ISR_NOERRCODE 21    ; Reserved
-ISR_NOERRCODE 22    ; Reserved
-ISR_NOERRCODE 23    ; Reserved
-ISR_NOERRCODE 24    ; Reserved
-ISR_NOERRCODE 25    ; Reserved
-ISR_NOERRCODE 26    ; Reserved
-ISR_NOERRCODE 27    ; Reserved
-ISR_NOERRCODE 28    ; Reserved
-ISR_NOERRCODE 29    ; Reserved
-ISR_NOERRCODE 30    ; Reserved
-ISR_NOERRCODE 31    ; Reserved
+; Common handler expects stack layout:
+;  [rsp + 0]  = int_no
+;  [rsp + 8]  = err_code (0 if none)
+isr_common:
+    PUSH_REGS
 
-; Common ISR stub - saves context and calls C handler
-isr_common_stub:
-    ; Save all general purpose registers
-    pusha                   ; Pushes EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI
-
-    ; Save segment registers
-    push ds
-    push es
-    push fs
-    push gs
-
-    ; Load kernel data segment
-    mov ax, 0x10           ; Kernel data segment selector
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-
-    ; Call C interrupt handler
-    ; Stack at this point has:
-    ; [esp + 0]  = GS
-    ; [esp + 4]  = FS
-    ; [esp + 8]  = ES
-    ; [esp + 12] = DS
-    ; [esp + 16] = EDI
-    ; [esp + 20] = ESI
-    ; [esp + 24] = EBP
-    ; [esp + 28] = ESP (useless value)
-    ; [esp + 32] = EBX
-    ; [esp + 36] = EDX
-    ; [esp + 40] = ECX
-    ; [esp + 44] = EAX
-    ; [esp + 48] = Interrupt number
-    ; [esp + 52] = Error code
-
-    ; Push error code and interrupt number for C handler
-    mov eax, [esp + 52]     ; Error code
-    push eax
-    mov eax, [esp + 52]     ; Interrupt number (adjusted for previous push)
-    push eax
-
+    ; After pushing regs, int_no/err_code are deeper on stack
+    ; 15 regs * 8 = 120 bytes
+    mov rdi, [rsp + 120 + 0]   ; int_no
+    mov rsi, [rsp + 120 + 8]   ; err_code
     call isr_handler
 
-    ; Clean up pushed arguments
-    add esp, 8
+    POP_REGS
+    add rsp, 16                ; pop int_no + err_code
+    iretq
 
-    ; Restore segment registers
-    pop gs
-    pop fs
-    pop es
-    pop ds
+%macro ISR_NOERR 1
+GLOBAL isr%1
+isr%1:
+    push qword 0
+    push qword %1
+    jmp isr_common
+%endmacro
 
-    ; Restore general purpose registers
-    popa
+%macro ISR_ERR 1
+GLOBAL isr%1
+isr%1:
+    ; CPU already pushed err_code
+    push qword %1
+    jmp isr_common
+%endmacro
 
-    ; Clean up error code and interrupt number
-    add esp, 8
-
-    ; Return from interrupt
-    sti
-    iret
+; Exceptions with error code in x86:
+; 8, 10, 11, 12, 13, 14, 17
+ISR_NOERR 0
+ISR_NOERR 1
+ISR_NOERR 2
+ISR_NOERR 3
+ISR_NOERR 4
+ISR_NOERR 5
+ISR_NOERR 6
+ISR_NOERR 7
+ISR_ERR   8
+ISR_NOERR 9
+ISR_ERR   10
+ISR_ERR   11
+ISR_ERR   12
+ISR_ERR   13
+ISR_ERR   14
+ISR_NOERR 15
+ISR_NOERR 16
+ISR_ERR   17
+ISR_NOERR 18
+ISR_NOERR 19
+ISR_NOERR 20
+ISR_NOERR 21
+ISR_NOERR 22
+ISR_NOERR 23
+ISR_NOERR 24
+ISR_NOERR 25
+ISR_NOERR 26
+ISR_NOERR 27
+ISR_NOERR 28
+ISR_NOERR 29
+ISR_NOERR 30
+ISR_NOERR 31

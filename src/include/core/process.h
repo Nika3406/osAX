@@ -1,3 +1,4 @@
+// src/include/core/process.h - x86_64 VERSION
 #ifndef PROCESS_H
 #define PROCESS_H
 
@@ -14,13 +15,23 @@ typedef enum {
     PROCESS_TERMINATED
 } process_state_t;
 
-// CPU context saved during context switch
+// CPU context saved during context switch (64-bit)
 typedef struct {
-    uint32_t eax, ebx, ecx, edx;
-    uint32_t esi, edi, esp, ebp;
-    uint32_t eip;
-    uint32_t eflags;
-    uint32_t cr3;  // Page directory
+    // General purpose registers (64-bit)
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rsi, rdi, rsp, rbp;
+    
+    // Extended registers (new in x86_64)
+    uint64_t r8, r9, r10, r11;
+    uint64_t r12, r13, r14, r15;
+    
+    // Special registers
+    uint64_t rip;           // Instruction pointer
+    uint64_t rflags;        // Flags register
+    uint64_t cr3;           // Page directory (PML4 address)
+    
+    // Segment registers (still 16-bit but stored in 64-bit for alignment)
+    uint64_t cs, ds, es, fs, gs, ss;
 } cpu_context_t;
 
 // Process Control Block
@@ -30,10 +41,10 @@ typedef struct process {
     process_state_t state;           // Current state
 
     cpu_context_t context;           // Saved CPU context
-    page_directory_t* page_dir;      // Process page directory
+    page_directory_t* page_dir;      // Process page directory (PML4)
 
-    uint32_t kernel_stack;           // Kernel stack pointer
-    uint32_t user_stack;             // User stack pointer
+    uint64_t kernel_stack;           // Kernel stack pointer (64-bit)
+    uint64_t user_stack;             // User stack pointer (64-bit)
 
     uint32_t priority;               // Scheduling priority
     uint32_t time_slice;             // Remaining time slice
@@ -55,4 +66,4 @@ void yield(void);
 void test_process_1(void);
 void test_process_2(void);
 
-#endif
+#endif // PROCESS_H

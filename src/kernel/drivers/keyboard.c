@@ -1,4 +1,4 @@
-// src/kernel/keyboard.c - PS/2 Keyboard Driver
+// src/kernel/drivers/keyboard.c - PS/2 Keyboard Driver - x86_64 VERSION
 #include "keyboard.h"
 #include "io.h"
 #include "idt.h"
@@ -95,10 +95,10 @@ void keyboard_init(void) {
     // Install keyboard IRQ handler (IRQ1 = interrupt 33)
     // The IRQ handler is defined in irq_asm.asm
     extern void irq1_handler(void);
-    extern void idt_set_gate(uint8_t, uint32_t, uint16_t, uint8_t);
     
+    // CHANGED: Cast to uint64_t for 64-bit
     // IDT_GATE_INTERRUPT is 0x8E, IDT_FLAG_DPL0 is 0x00
-    idt_set_gate(33, (uint32_t)irq1_handler, 0x08, 0x8E);
+    idt_set_gate(33, (uint64_t)irq1_handler, 0x08, 0x8E);
     
     // Enable keyboard IRQ (unmask IRQ1 on PIC)
     uint8_t mask = inb(0x21);
