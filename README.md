@@ -501,29 +501,6 @@ Possible improvements to this bootloader:
 
 ---
 
-## References
-
-- Intel 64 and IA-32 Architectures Software Developer's Manual
-- OSDev Wiki: https://wiki.osdev.org
-- BIOS Interrupt Call: https://en.wikipedia.org/wiki/BIOS_interrupt_call
-
----
-
-## License
-
-See project LICENSE file for licensing information.
-
-## Contributing
-
-When modifying the bootloader, always:
-1. Update sector count calculations if changing stage sizes
-2. Run `make verify` after building
-3. Test in QEMU before real hardware
-4. Document any changes to memory layout or calling conventions
-5. Maintain compatibility with existing kernel entry point
-
----
-
 # 2. Kernel
 
 ## Overview
