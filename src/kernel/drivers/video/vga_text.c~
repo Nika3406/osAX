@@ -1,0 +1,117 @@
+// src/kernel/drivers/video/vga_text.c
+// VGA Text Mode Driver (80x25)
+#include "video.h"
+#include "io.h"
+#include "kstring.h"
+
+#define VGA_MEMORY    0xB8000
+#define VGA_WIDTH     80
+#define VGA_HEIGHT    25
+#define VGA_CTRL_PORT 0x3D4
+#define VGA_DATA_PORT 0x3D5
+
+static volatile uint16_t* vga_buffer = (uint16_t*)VGA_MEMORY;
+
+// ===== Driver Implementation =====
+
+static int vga_text_init(void) {
+    // VGA text mode is already set up by BIOS
+    // Just verify the buffer is accessible
+    vga_buffer = (uint16_t*)VGA_MEMORY;
+    return 0;
+}
+
+static void vga_text_clear(void) {
+    uint16_t blank = 0x0F00 | ' ';  // White on black space
+    
+    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
+        vga_buffer[i] = blank;
+    }
+}
+
+static void vga_text_scroll(void) {
+    // Move all lines up by one
+    for (int y = 0; y < VGA_HEIGHT - 1; y++) {
+        for (int x = 0; x < VGA_WIDTH; x++) {
+            vga_buffer[y * VGA_WIDTH + x] = 
+                vga_buffer[(y + 1) * VGA_WIDTH + x];
+        }
+    }
+    
+    // Clear the bottom line
+    uint16_t blank = 0x0F00 | ' ';
+    for (int x = 0; x < VGA_WIDTH; x++) {
+        vga_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = blank;
+    }
+}
+
+static void vga_text_putchar(uint32_t col, uint32_t row, char c, 
+                              uint32_t fg, uint32_t bg) {
+    if (col >= VGA_WIDTH || row >= VGA_HEIGHT) {
+        return;
+    }
+    
+    // VGA uses 4-bit colors, so mask to lower 4 bits
+    uint8_t fg_color = fg & 0x0F;
+    uint8_t bg_color = bg & 0x0F;
+    
+    // VGA attribute byte: [blink][bg3][bg2][bg1][bg0][fg3][fg2][fg1][fg0]
+    // We don't use blink, so: [0][bg][fg]
+    uint16_t attribute = ((bg_color & 0x0F) << 12) | ((fg_color & 0x0F) << 8);
+    
+    uint16_t entry = attribute | (uint8_t)c;
+    vga_buffer[row * VGA_WIDTH + col] = entry;
+}
+
+static video_info_t vga_text_get_info(void) {
+    video_info_t info = {0};
+    info.mode = VIDEO_MODE_TEXT;
+    info.fb_address = 0;  // Not applicable for text mode
+    info.fb_width = 0;
+    info.fb_height = 0;
+    info.fb_pitch = 0;
+    info.fb_bpp = 0;
+    info.text_cols = VGA_WIDTH;
+    info.text_rows = VGA_HEIGHT;
+    return info;
+}
+
+// ===== Hardware Cursor Control (Optional) =====
+
+void vga_update_cursor(uint32_t col, uint32_t row) {
+    uint16_t pos = row * VGA_WIDTH + col;
+    
+    // Send low byte
+    outb(VGA_CTRL_PORT, 0x0F);
+    outb(VGA_DATA_PORT, (uint8_t)(pos & 0xFF));
+    
+    // Send high byte
+    outb(VGA_CTRL_PORT, 0x0E);
+    outb(VGA_DATA_PORT, (uint8_t)((pos >> 8) & 0xFF));
+}
+
+void vga_disable_cursor(void) {
+    outb(VGA_CTRL_PORT, 0x0A);
+    outb(VGA_DATA_PORT, 0x20);
+}
+
+void vga_enable_cursor(uint8_t cursor_start, uint8_t cursor_end) {
+    outb(VGA_CTRL_PORT, 0x0A);
+    outb(VGA_DATA_PORT, (inb(VGA_DATA_PORT) & 0xC0) | cursor_start);
+    
+    outb(VGA_CTRL_PORT, 0x0B);
+    outb(VGA_DATA_PORT, (inb(VGA_DATA_PORT) & 0xE0) | cursor_end);
+}
+
+// ===== Driver Structure (exported) =====
+
+video_driver_t vga_text_driver = {
+    .name = "VGA Text Mode (80x25)",
+    .init = vga_text_init,
+    .clear = vga_text_clear,
+    .scroll = vga_text_scroll,
+    .putpixel = NULL,      // Not supported in text mode
+    .fillrect = NULL,      // Not supported in text mode
+    .putchar = vga_text_putchar,
+    .get_info = vga_text_get_info
+};

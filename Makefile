@@ -63,7 +63,10 @@ FS_SOURCES := \
 DRIVER_SOURCES := \
     src/kernel/drivers/keyboard.c \
     src/kernel/drivers/serial.c \
-    src/kernel/drivers/terminal.c
+    src/kernel/drivers/terminal.c \
+    src/kernel/drivers/video/video.c \
+    src/kernel/drivers/video/vga_text.c \
+    src/kernel/drivers/video/vesa.c
 
 LIB_SOURCES := \
     src/kernel/lib/string.c \
